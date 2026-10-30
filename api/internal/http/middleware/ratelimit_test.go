@@ -1,14 +1,16 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
-func TestIPLimiterBurstAndRefill(t *testing.T) {
-	l := newIPLimiter(authBurst, authRefillEvery)
+func TestKeyLimiterBurstAndRefill(t *testing.T) {
+	l := newKeyLimiter(authBurst, authRefillEvery, maxLimiterKeys)
 	now := time.Now()
 	for i := 0; i < 10; i++ {
 		if !l.allow("1.2.3.4", now) {
@@ -32,18 +34,61 @@ func TestIPLimiterBurstAndRefill(t *testing.T) {
 	}
 }
 
-func TestIPLimiterSweep(t *testing.T) {
-	l := newIPLimiter(authBurst, authRefillEvery)
+func TestKeyLimiterEvictsLeastRecentlyUsed(t *testing.T) {
+	l := newKeyLimiter(1, time.Hour, 3)
 	now := time.Now()
-	l.allow("old", now)
-	l.allow("trigger", now.Add(time.Hour))
-	if _, ok := l.entries["old"]; ok {
-		t.Fatal("idle entry should be swept")
+	for _, k := range []string{"a", "b", "c"} {
+		if !l.allow(k, now) {
+			t.Fatalf("%s first request", k)
+		}
+	}
+	if l.allow("a", now) {
+		t.Fatal("a is exhausted and still tracked")
+	}
+	if !l.allow("d", now) {
+		t.Fatal("d first request")
+	}
+	if l.size() != 3 {
+		t.Fatalf("size = %d, want 3", l.size())
+	}
+	if !l.allow("b", now) {
+		t.Fatal("b was the least recently used and must have been evicted (fresh bucket)")
+	}
+	if l.allow("a", now) {
+		t.Fatal("a was recently used and must still be tracked")
+	}
+}
+
+func TestKeyLimiterBoundsMemoryUnderFlood(t *testing.T) {
+	l := newKeyLimiter(5, time.Minute, maxLimiterKeys)
+	now := time.Now()
+	for i := 0; i < maxLimiterKeys*3; i++ {
+		l.allow(fmt.Sprintf("10.%d.%d.%d", i>>16&255, i>>8&255, i&255), now)
+	}
+	if l.size() != maxLimiterKeys {
+		t.Fatalf("size = %d, want %d", l.size(), maxLimiterKeys)
+	}
+}
+
+func TestKeyLimiterLongKeysAreHashed(t *testing.T) {
+	l := newKeyLimiter(1, time.Hour, 10)
+	now := time.Now()
+	long := strings.Repeat("x", 5000)
+	if !l.allow(long, now) || l.allow(long, now) {
+		t.Fatal("long key must still be limited consistently")
+	}
+	for k := range l.entries {
+		if len(k) > maxLimiterKeyLen {
+			t.Fatalf("stored key length %d", len(k))
+		}
+	}
+	if !l.allow(long+"y", now) {
+		t.Fatal("different long keys must not collide")
 	}
 }
 
 func TestLimiterMiddlewareResponds429(t *testing.T) {
-	l := newIPLimiter(2, time.Hour)
+	l := newKeyLimiter(2, time.Hour, 100)
 	h := limiterMiddleware(l)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -62,5 +107,30 @@ func TestLimiterMiddlewareResponds429(t *testing.T) {
 	}
 	if codes[0] != 204 || codes[1] != 204 || codes[2] != 429 {
 		t.Fatalf("codes = %v", codes)
+	}
+}
+
+func TestEmailLimiterBurstFiveIndependentPerEmail(t *testing.T) {
+	a := NewAuthLimits()
+	for i := 0; i < 5; i++ {
+		if !a.AllowEmail("victim@example.test") {
+			t.Fatalf("attempt %d should be allowed", i)
+		}
+	}
+	if a.AllowEmail("victim@example.test") {
+		t.Fatal("6th attempt for the same email must be limited")
+	}
+	if !a.AllowEmail("other@example.test") {
+		t.Fatal("other emails are independent")
+	}
+}
+
+func TestAuthLimitsAreIndependentInstances(t *testing.T) {
+	a, b := NewAuthLimits(), NewAuthLimits()
+	for i := 0; i < 6; i++ {
+		a.AllowEmail("x@example.test")
+	}
+	if !b.AllowEmail("x@example.test") {
+		t.Fatal("instances must not share state")
 	}
 }

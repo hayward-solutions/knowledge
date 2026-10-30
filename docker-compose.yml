@@ -15,33 +15,35 @@ services:
     ports:
       - "5432:5432"
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
+  rustfs:
+    image: rustfs/rustfs:1.0.4
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      RUSTFS_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      RUSTFS_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
     volumes:
-      - minio_data:/data
+      - rustfs_data:/data
     ports:
       - "9000:9000"
       - "9001:9001"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/health || exit 1"]
       interval: 5s
       timeout: 2s
-      retries: 10
+      retries: 20
 
-  minio-createbucket:
-    image: minio/mc:latest
+  rustfs-createbucket:
+    image: amazon/aws-cli:2.39.2
     depends_on:
-      minio:
+      rustfs:
         condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      AWS_DEFAULT_REGION: us-east-1
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin} &&
-      (mc mb --ignore-existing local/${STORAGE_S3_BUCKET:-knowledge-dev}) &&
-      exit 0
+      aws --endpoint-url http://rustfs:9000 s3api head-bucket --bucket ${STORAGE_S3_BUCKET:-knowledge-dev} ||
+      aws --endpoint-url http://rustfs:9000 s3 mb s3://${STORAGE_S3_BUCKET:-knowledge-dev}
       "
 
   api:
@@ -52,8 +54,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      minio:
-        condition: service_healthy
+      rustfs-createbucket:
+        condition: service_completed_successfully
     read_only: true
     tmpfs:
       - /tmp
@@ -64,7 +66,7 @@ services:
       APP_ORIGINS: ${APP_ORIGINS:-http://localhost:3000}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Change-Me-On-First-Boot-1}
       ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME:-Admin}
       OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
@@ -78,7 +80,7 @@ services:
       OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-SSO}
       STORAGE_S3_BUCKET: ${STORAGE_S3_BUCKET:-knowledge-dev}
       STORAGE_S3_REGION: us-east-1
-      STORAGE_S3_ENDPOINT: http://minio:9000
+      STORAGE_S3_ENDPOINT: http://rustfs:9000
       STORAGE_S3_FORCE_PATH_STYLE: "true"
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
@@ -102,7 +104,12 @@ services:
         condition: service_healthy
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/login || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
 volumes:
   db_data:
-  minio_data:
+  rustfs_data:

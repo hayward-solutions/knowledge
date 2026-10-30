@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -18,12 +19,21 @@ type AuthHandler struct {
 	Deps
 }
 
+func (h *AuthHandler) limits() *mw.AuthLimits {
+	if h.AuthLimits == nil {
+		return mw.NewAuthLimits()
+	}
+	return h.AuthLimits
+}
+
 func (h *AuthHandler) Routes(r chi.Router) {
-	r.With(mw.AuthLimiter()).Post("/auth/login", h.Login)
+	limits := h.limits()
+	h.AuthLimits = limits
+	r.With(limits.IP()).Post("/auth/login", h.Login)
 	r.With(mw.OptionalAuth(h.Store)).Post("/auth/logout", h.Logout)
 	r.With(mw.RequireAuth(h.Store)).Get("/auth/me", h.Me)
 	r.With(mw.RequireAuth(h.Store)).Patch("/auth/me", h.UpdateMe)
-	r.With(mw.RequireAuth(h.Store), mw.AuthLimiter()).Post("/auth/change-password", h.ChangePassword)
+	r.With(mw.RequireAuth(h.Store), limits.IP()).Post("/auth/change-password", h.ChangePassword)
 }
 
 func (h *AuthHandler) startSession(w http.ResponseWriter, r *http.Request, u domain.User) error {
@@ -49,6 +59,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if !ok || body.Password == "" {
 		auth.DummyVerify(body.Password)
 		httpErr(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	if !h.AuthLimits.AllowEmail(email) {
+		tooManyRequests(w)
 		return
 	}
 	u, err := h.Store.GetUserByEmail(r.Context(), email)
@@ -144,6 +158,10 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, http.StatusBadRequest, "bad body")
 		return
 	}
+	if !h.AuthLimits.AllowEmail(strings.ToLower(u.Email)) {
+		tooManyRequests(w)
+		return
+	}
 	if err := auth.ValidatePassword(body.NewPassword); err != nil {
 		httpErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -171,5 +189,15 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		internalErr(w, r, err, "failed to set password")
 		return
 	}
+	token, _ := mw.SessionTokenFrom(r.Context())
+	if err := h.Store.DeleteOtherUserSessions(r.Context(), u.ID, token); err != nil {
+		internalErr(w, r, err, "failed to revoke sessions")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func tooManyRequests(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "60")
+	httpErr(w, http.StatusTooManyRequests, "too many requests")
 }

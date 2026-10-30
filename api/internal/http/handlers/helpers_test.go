@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/netip"
 	"sync/atomic"
 	"testing"
 
@@ -38,7 +39,10 @@ func (t ipTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func newEnv(t *testing.T, mutate func(*config.Config)) *env {
 	t.Helper()
 	s := testutil.NewDB(t)
-	cfg := &config.Config{AppOrigins: []string{"http://app.test"}}
+	cfg := &config.Config{
+		AppOrigins:     []string{"http://app.test"},
+		TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")},
+	}
 	if mutate != nil {
 		mutate(cfg)
 	}

@@ -1,3 +1,4 @@
+import { safeNext } from "../safe-next";
 import { api, apiUrl, jsonBody } from "./client";
 import type { OIDCConfig, User } from "./types";
 
@@ -41,6 +42,6 @@ export function oidcConfig(): Promise<OIDCConfig> {
 }
 
 export function oidcLoginUrl(next?: string): string {
-  const q = next ? `?next=${encodeURIComponent(next)}` : "";
+  const q = next ? `?next=${encodeURIComponent(safeNext(next))}` : "";
   return apiUrl(`/auth/oidc/login${q}`);
 }

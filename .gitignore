@@ -18,3 +18,4 @@ web/test-results/
 .playwright-mcp/
 .claude/pm/**/scratch
 .claude/settings.local.json
+web/e2e/.state/

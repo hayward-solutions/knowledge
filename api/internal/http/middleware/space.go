@@ -107,7 +107,7 @@ func resolveSpace(lookup spaceLookup) func(http.Handler) http.Handler {
 			}
 			role, ok := effectiveRole(u, access)
 			if !ok {
-				WriteError(w, http.StatusForbidden, "forbidden")
+				WriteError(w, http.StatusNotFound, "not found")
 				return
 			}
 			sc := &SpaceCtx{

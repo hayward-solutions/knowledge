@@ -194,7 +194,7 @@ func TestSpaceRoleResolution(t *testing.T) {
 		{"internal: space admin manages", "PATCH", "/spaces/INT", "spaceadmin", 200, "admin"},
 		{"internal: system admin manages", "PATCH", "/spaces/INT", "sysadmin", 200, "admin"},
 
-		{"private: non-member forbidden", "GET", "/spaces/PRIV", "nobody", 403, ""},
+		{"private: non-member sees not found", "GET", "/spaces/PRIV", "nobody", 404, ""},
 		{"private: member viewer views", "GET", "/spaces/PRIV", "viewer", 200, "viewer"},
 		{"private: member viewer cannot edit", "POST", "/spaces/PRIV/pages", "viewer", 403, ""},
 		{"private: member editor edits", "POST", "/spaces/PRIV/pages", "editor", 200, "editor"},
@@ -208,7 +208,7 @@ func TestSpaceRoleResolution(t *testing.T) {
 		{"archived: space admin can still write", "POST", "/spaces/ARCH/pages", "spaceadmin", 200, "admin"},
 		{"archived: system admin can still write", "POST", "/spaces/ARCH/pages", "sysadmin", 200, "admin"},
 		{"archived private: editor cannot edit", "POST", "/spaces/PARCH/pages", "editor", 403, ""},
-		{"archived private: non-member forbidden", "GET", "/spaces/PARCH", "nobody", 403, ""},
+		{"archived private: non-member sees not found", "GET", "/spaces/PARCH", "nobody", 404, ""},
 
 		{"deleted: member not found", "GET", "/spaces/GONE", "editor", 404, ""},
 		{"deleted: non-member not found", "GET", "/spaces/GONE", "nobody", 404, ""},
@@ -261,7 +261,7 @@ func TestSpaceByPage(t *testing.T) {
 		wantKey  string
 	}{
 		{"internal page viewable by non-member", "GET", page("INT"), "nobody", 200, "INT"},
-		{"private page forbidden to non-member", "GET", page("PRIV"), "nobody", 403, ""},
+		{"private page hidden from non-member", "GET", page("PRIV"), "nobody", 404, ""},
 		{"private page viewable by member", "GET", page("PRIV"), "viewer", 200, "PRIV"},
 		{"private page editable by editor", "PATCH", page("PRIV"), "editor", 200, "PRIV"},
 		{"private page not editable by viewer", "PATCH", page("PRIV"), "viewer", 403, ""},
@@ -295,7 +295,7 @@ func TestSpaceByResolver(t *testing.T) {
 		wantCode int
 	}{
 		{"resolved private space, member", "/comments/ok-priv", "viewer", 200},
-		{"resolved private space, non-member", "/comments/ok-priv", "nobody", 403},
+		{"resolved private space, non-member", "/comments/ok-priv", "nobody", 404},
 		{"resolver not found", "/comments/missing", "sysadmin", 404},
 		{"resolver invalid id", "/comments/bad", "sysadmin", 400},
 		{"anonymous", "/comments/ok-priv", "", 401},

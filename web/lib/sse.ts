@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { apiUrl } from "@/lib/api/client";
+import { apiUrl, notifyUnauthenticated } from "@/lib/api/client";
 
 type Handlers = Record<string, (data: any) => void>;
 
 const MIN_DELAY_MS = 1000;
 const MAX_DELAY_MS = 30000;
+const MAX_CONSECUTIVE_FAILURES = 6;
+const STABLE_AFTER_MS = 5000;
 
 export function useEventStream(path: string | null, handlers: Handlers) {
   const ref = useRef<Handlers>(handlers);
@@ -17,7 +19,9 @@ export function useEventStream(path: string | null, handlers: Handlers) {
     if (!path) return;
     let es: EventSource | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let probe: AbortController | null = null;
     let delay = MIN_DELAY_MS;
+    let failures = 0;
     let stopped = false;
     const eventNames = names ? names.split(",") : [];
 
@@ -33,22 +37,68 @@ export function useEventStream(path: string | null, handlers: Handlers) {
       fn(data);
     };
 
-    const connect = () => {
+    const retry = () => {
       if (stopped) return;
-      es = new EventSource(apiUrl(path), { withCredentials: true });
-      es.onopen = () => {
+      failures += 1;
+      if (failures >= MAX_CONSECUTIVE_FAILURES) {
+        stopped = true;
+        return;
+      }
+      timer = setTimeout(connect, delay);
+      delay = Math.min(delay * 2, MAX_DELAY_MS);
+    };
+
+    const open = () => {
+      if (stopped) return;
+      const source = new EventSource(apiUrl(path), { withCredentials: true });
+      es = source;
+      let openedAt = 0;
+      source.onopen = () => {
+        openedAt = Date.now();
         delay = MIN_DELAY_MS;
       };
       for (const name of eventNames) {
-        es.addEventListener(name, dispatch(name) as EventListener);
+        source.addEventListener(name, dispatch(name) as EventListener);
       }
-      es.onerror = () => {
-        es?.close();
-        es = null;
+      source.onerror = () => {
+        source.close();
+        if (es === source) es = null;
         if (stopped) return;
-        timer = setTimeout(connect, delay);
-        delay = Math.min(delay * 2, MAX_DELAY_MS);
+        if (openedAt && Date.now() - openedAt >= STABLE_AFTER_MS) {
+          failures = 0;
+          delay = MIN_DELAY_MS;
+        }
+        retry();
       };
+    };
+
+    const connect = () => {
+      if (stopped) return;
+      const ctrl = new AbortController();
+      probe = ctrl;
+      fetch(apiUrl(path), {
+        credentials: "include",
+        headers: { Accept: "text/event-stream" },
+        signal: ctrl.signal,
+      })
+        .then((res) => {
+          ctrl.abort();
+          if (stopped) return;
+          if (res.status === 401 || res.status === 403) {
+            stopped = true;
+            if (res.status === 401) notifyUnauthenticated(path);
+            return;
+          }
+          if (res.status === 200) {
+            open();
+            return;
+          }
+          retry();
+        })
+        .catch(() => {
+          if (stopped || ctrl.signal.aborted) return;
+          retry();
+        });
     };
 
     connect();
@@ -56,6 +106,7 @@ export function useEventStream(path: string | null, handlers: Handlers) {
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+      probe?.abort();
       es?.close();
     };
   }, [path, names]);

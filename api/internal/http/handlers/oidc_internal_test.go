@@ -1,10 +1,17 @@
 package handlers
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSafeNext(t *testing.T) {
 	good := []string{"/", "/spaces", "/spaces/ENG/pages/1?x=y"}
-	bad := []string{"", "spaces", "//evil.test", "/\\evil.test", "https://evil.test", "javascript:alert(1)", "/ok\r\nSet-Cookie: x=1"}
+	bad := []string{
+		"", "spaces", "//evil.test", "/\\evil.test", "https://evil.test", "javascript:alert(1)",
+		"/ok\r\nSet-Cookie: x=1", "/a\tb", "/a\x00b", "/a\x7fb", "/a\\b", "/ok/\\..\\evil", "/" + strings.Repeat("a", 3000),
+		"http://evil.test/", "///evil.test", "/%zz",
+	}
 	for _, p := range good {
 		if !safeNext(p) {
 			t.Errorf("safeNext(%q) = false", p)

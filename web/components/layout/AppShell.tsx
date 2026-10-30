@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { RequireAuth } from "@/lib/auth";
 import { cn } from "@/lib/cn";
@@ -17,6 +17,7 @@ export interface AppShellProps {
 function Frame({ children, sidebar, topSlot, contentClassName }: AppShellProps) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const pathname = usePathname();
+  const closeNav = useCallback(() => setMobileNavOpen(false), []);
 
   useEffect(() => {
     setMobileNavOpen(false);
@@ -33,11 +34,11 @@ function Frame({ children, sidebar, topSlot, contentClassName }: AppShellProps) 
 
   return (
     <div className="flex min-h-screen bg-ink-50">
-      <Sidebar mobileOpen={mobileNavOpen} onMobileClose={() => setMobileNavOpen(false)}>
+      <Sidebar mobileOpen={mobileNavOpen} onMobileClose={closeNav}>
         {sidebar}
       </Sidebar>
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar onMenuClick={() => setMobileNavOpen(true)}>{topSlot}</TopBar>
+        <TopBar menuOpen={mobileNavOpen} onMenuClick={() => setMobileNavOpen(true)}>{topSlot}</TopBar>
         <main className={cn("flex min-h-0 flex-1 flex-col", contentClassName)}>{children}</main>
       </div>
     </div>

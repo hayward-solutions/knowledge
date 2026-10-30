@@ -3,6 +3,9 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"net/netip"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -14,16 +17,22 @@ import (
 func NewRouter(d handlers.Deps) http.Handler {
 	mw.CookieSecure = d.Config != nil && d.Config.CookieSecure
 	var origins []string
+	var trusted []netip.Prefix
 	if d.Config != nil {
 		origins = d.Config.AppOrigins
+		trusted = d.Config.TrustedProxies
+	}
+	if d.AuthLimits == nil {
+		d.AuthLimits = mw.NewAuthLimits()
 	}
 
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
-	r.Use(chimw.RealIP)
+	r.Use(mw.RealIP(trusted))
 	r.Use(chimw.Logger)
 	r.Use(chimw.Recoverer)
 	r.Use(corsMiddleware(origins))
+	r.Use(longRequests(longRequestTimeout))
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		mw.WriteError(w, http.StatusNotFound, "not found")
@@ -103,6 +112,22 @@ func corsMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 			}
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+const longRequestTimeout = 5 * time.Minute
+
+func longRequests(d time.Duration) func(http.Handler) http.Handler {
+	extend := mw.LongRequest(d)
+	return func(next http.Handler) http.Handler {
+		long := extend(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/attachments") || strings.HasSuffix(r.URL.Path, "/import")) {
+				long.ServeHTTP(w, r)
 				return
 			}
 			next.ServeHTTP(w, r)

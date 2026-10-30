@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
@@ -10,23 +11,32 @@ import { useTheme } from "@/lib/theme";
 import { Avatar } from "@/components/ui/Avatar";
 import { Menu, MenuDivider, MenuItem } from "@/components/ui/Dropdown";
 import { useToast } from "@/components/ui/Toast";
+import { SIDEBAR_ID } from "@/components/layout/Sidebar";
 import { QuickSearch } from "@/components/search/QuickSearch";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
+import { NewPageDialog } from "@/components/pages/NewPageDialog";
+import { BodyPortal } from "@/components/spaces/BodyPortal";
+import { useOptionalSpace } from "@/components/spaces/SpaceContext";
 
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "dev";
 
 export function TopBar({
   children,
   onMenuClick,
+  menuOpen = false,
 }: {
   children?: React.ReactNode;
   onMenuClick?: () => void;
+  menuOpen?: boolean;
 }) {
   const router = useRouter();
   const qc = useQueryClient();
   const toast = useToast();
   const { resolved, toggle } = useTheme();
   const { data: me } = useMe();
+  const spaceCtx = useOptionalSpace();
+  const [creating, setCreating] = useState(false);
+  const canCreateHere = Boolean(spaceCtx?.canEdit);
 
   async function signOut() {
     try {
@@ -48,6 +58,8 @@ export function TopBar({
           type="button"
           onClick={onMenuClick}
           aria-label="Open navigation"
+          aria-expanded={menuOpen}
+          aria-controls={SIDEBAR_ID}
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-ink-700 hover:bg-ink-100 md:hidden"
         >
           <MenuIcon size={20} />
@@ -61,10 +73,27 @@ export function TopBar({
       </div>
 
       <div className="flex shrink-0 items-center gap-1 md:ml-auto">
-        <Link href="/spaces" className="btn btn-primary" title="Create">
-          <Plus size={14} />
-          <span className="hidden sm:inline">Create</span>
-        </Link>
+        {canCreateHere ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            title="Create page"
+            onClick={() => setCreating(true)}
+          >
+            <Plus size={14} />
+            <span className="hidden sm:inline">Create</span>
+          </button>
+        ) : (
+          <Link href="/spaces" className="btn btn-primary" title="Create">
+            <Plus size={14} />
+            <span className="hidden sm:inline">Create</span>
+          </Link>
+        )}
+        {creating && canCreateHere && (
+          <BodyPortal>
+            <NewPageDialog onClose={() => setCreating(false)} />
+          </BodyPortal>
+        )}
 
         <NotificationBell />
 

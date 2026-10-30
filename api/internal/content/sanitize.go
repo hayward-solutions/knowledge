@@ -21,6 +21,7 @@ var (
 	reSpanType   = regexp.MustCompile(`^(mention|status|comment)$`)
 	reDivType    = regexp.MustCompile(`^(panel|toc)$`)
 	reTitleAlt   = regexp.MustCompile(`^.{0,500}$`)
+	reAlign      = regexp.MustCompile(`^(left|center|right|justify)$`)
 )
 
 var (
@@ -45,6 +46,7 @@ func buildPolicy() *bluemonday.Policy {
 	)
 	p.AllowElements("a", "img", "span", "div", "details")
 
+	p.AllowAttrs("data-align").Matching(reAlign).OnElements("p", "h1", "h2", "h3", "h4", "h5", "h6")
 	p.AllowAttrs("id").Matching(reHeadingID).OnElements("h1", "h2", "h3", "h4", "h5", "h6")
 
 	p.AllowAttrs("data-type").Matching(regexp.MustCompile(`^taskList$`)).OnElements("ul")

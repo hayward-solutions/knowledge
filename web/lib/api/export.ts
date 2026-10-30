@@ -15,7 +15,7 @@ export function importMarkdown(
   parentId?: string | null
 ): Promise<ImportResult> {
   const fd = new FormData();
-  for (const f of files) fd.append("files", f, f.name);
+  for (const f of files) fd.append("files", f, f.webkitRelativePath || f.name);
   if (parentId) fd.append("parent_id", parentId);
   return apiUpload<ImportResult>(`/spaces/${key}/import`, fd);
 }

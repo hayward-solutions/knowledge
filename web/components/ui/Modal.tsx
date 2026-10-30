@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+const modalStack: symbol[] = [];
 
 export function Modal({
   title,
@@ -24,8 +27,22 @@ export function Modal({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
+  const [container, setContainer] = useState<HTMLElement | null>(null);
+  const previouslyFocused = useRef<HTMLElement | null>(null);
+
   useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null;
+    previouslyFocused.current = document.activeElement as HTMLElement | null;
+    setContainer(document.body);
+    return () => {
+      const el = previouslyFocused.current;
+      if (el && document.contains(el)) el.focus?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!container) return;
+    const id = Symbol("modal");
+    modalStack.push(id);
     const dialog = dialogRef.current;
     const first = dialog?.querySelector<HTMLElement>(
       "[data-autofocus], input, textarea, select"
@@ -33,8 +50,9 @@ export function Modal({
     (first ?? dialog)?.focus();
 
     const onKey = (e: KeyboardEvent) => {
+      if (modalStack[modalStack.length - 1] !== id) return;
       if (e.key === "Escape") {
-        e.stopPropagation();
+        e.preventDefault();
         onCloseRef.current();
         return;
       }
@@ -42,14 +60,19 @@ export function Modal({
       const items = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE));
       if (items.length === 0) {
         e.preventDefault();
+        dialog.focus();
         return;
       }
       const firstEl = items[0];
       const lastEl = items[items.length - 1];
-      if (e.shiftKey && document.activeElement === firstEl) {
+      const active = document.activeElement;
+      if (!dialog.contains(active)) {
+        e.preventDefault();
+        firstEl.focus();
+      } else if (e.shiftKey && (active === firstEl || active === dialog)) {
         e.preventDefault();
         lastEl.focus();
-      } else if (!e.shiftKey && document.activeElement === lastEl) {
+      } else if (!e.shiftKey && active === lastEl) {
         e.preventDefault();
         firstEl.focus();
       }
@@ -59,12 +82,15 @@ export function Modal({
     document.body.style.overflow = "hidden";
     return () => {
       document.removeEventListener("keydown", onKey);
+      const idx = modalStack.indexOf(id);
+      if (idx >= 0) modalStack.splice(idx, 1);
       document.body.style.overflow = prevOverflow;
-      previouslyFocused?.focus?.();
     };
-  }, []);
+  }, [container]);
 
-  return (
+  if (!container) return null;
+
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center p-0 animate-fade-in sm:items-center sm:p-4">
       <div
         className="absolute inset-0 bg-black/50 backdrop-blur-[1px]"
@@ -100,6 +126,7 @@ export function Modal({
           </footer>
         )}
       </div>
-    </div>
+    </div>,
+    container
   );
 }

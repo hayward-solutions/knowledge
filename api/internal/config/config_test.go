@@ -26,6 +26,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.OIDC.GroupsClaim != "groups" || cfg.OIDC.EmailClaim != "email" || cfg.OIDC.NameClaim != "name" || cfg.OIDC.ProviderName != "SSO" {
 		t.Fatalf("unexpected oidc defaults: %+v", cfg.OIDC)
 	}
+	if !cfg.OIDC.RequireEmailVerified {
+		t.Fatal("OIDC_REQUIRE_EMAIL_VERIFIED must default to true")
+	}
 	if cfg.Storage.Region != "us-east-1" || cfg.Storage.Bucket != "" {
 		t.Fatalf("unexpected storage defaults: %+v", cfg.Storage)
 	}
@@ -66,6 +69,32 @@ func TestLoadInvalid(t *testing.T) {
 	} {
 		if _, err := LoadFrom(env(m)); err == nil {
 			t.Fatalf("%s: expected error", name)
+		}
+	}
+}
+
+func TestLoadOIDCRequireEmailVerifiedOverride(t *testing.T) {
+	cfg, err := LoadFrom(env(map[string]string{"POSTGRES_DSN": "x", "OIDC_REQUIRE_EMAIL_VERIFIED": "false"}))
+	if err != nil || cfg.OIDC.RequireEmailVerified {
+		t.Fatalf("override failed: %v %+v", err, cfg.OIDC)
+	}
+}
+
+func TestTrustedProxies(t *testing.T) {
+	cfg, err := LoadFrom(env(map[string]string{"POSTGRES_DSN": "x"}))
+	if err != nil || len(cfg.TrustedProxies) != 0 {
+		t.Fatalf("default must be empty: %v %v", err, cfg.TrustedProxies)
+	}
+	cfg, err = LoadFrom(env(map[string]string{"POSTGRES_DSN": "x", "TRUSTED_PROXIES": "10.0.0.0/8, 192.168.1.5 ,fd00::/8"}))
+	if err != nil || len(cfg.TrustedProxies) != 3 {
+		t.Fatalf("parse: %v %v", err, cfg.TrustedProxies)
+	}
+	if cfg.TrustedProxies[1].String() != "192.168.1.5/32" {
+		t.Fatalf("bare ip: %v", cfg.TrustedProxies[1])
+	}
+	for _, bad := range []string{"nope", "10.0.0.0/99", "10.0.0.256"} {
+		if _, err := LoadFrom(env(map[string]string{"POSTGRES_DSN": "x", "TRUSTED_PROXIES": bad})); err == nil {
+			t.Errorf("%q must be rejected", bad)
 		}
 	}
 }
