@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/hayward-solutions/knowledge/api/internal/domain"
 )
@@ -106,4 +107,15 @@ func (s *Store) FilterNotifiable(ctx context.Context, spaceID uuid.UUID, pageID 
 		   AND (u.is_system_admin OR m.user_id IS NOT NULL OR s.visibility = 'internal')
 		   AND (p.id IS NULL OR p.status <> 'draft' OR u.id = p.created_by OR u.is_system_admin OR m.role = 'admin')
 		 ORDER BY u.id`, spaceID, userIDs, page)
+}
+
+func deletePageSubtreeWatches(ctx context.Context, tx pgx.Tx, pageID uuid.UUID) error {
+	_, err := tx.Exec(ctx,
+		`WITH RECURSIVE sub AS (
+		     SELECT id FROM pages WHERE id = $1
+		     UNION ALL
+		     SELECT c.id FROM pages c JOIN sub ON c.parent_id = sub.id
+		 )
+		 DELETE FROM watches WHERE target_type = 'page' AND target_id IN (SELECT id FROM sub)`, pageID)
+	return err
 }

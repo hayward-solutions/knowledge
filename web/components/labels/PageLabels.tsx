@@ -41,6 +41,7 @@ export function PageLabels({ pageId, canEdit, initial }: PageLabelsProps) {
     try {
       const saved = await setPageLabels(pageId, next);
       qc.setQueryData(["page-labels", pageId], saved);
+      void qc.invalidateQueries({ queryKey: ["page", pageId] });
       void qc.invalidateQueries({ queryKey: ["labels"] });
       void qc.invalidateQueries({ queryKey: ["space-labels"] });
       void qc.invalidateQueries({ queryKey: ["label-pages"] });

@@ -406,14 +406,31 @@ func TestPagePurge(t *testing.T) {
 	if _, err := f.s.UpsertDraft(f.ctx, store.DraftParams{PageID: c.ID, UserID: f.user.ID, Title: "d"}); err != nil {
 		t.Fatal(err)
 	}
+	other := f.newPage(nil, "Other")
+	for _, id := range []uuid.UUID{p.ID, c.ID, other.ID} {
+		if err := f.s.SetWatch(f.ctx, f.user.ID, domain.WatchTargetPage, id); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := f.s.PurgePage(f.ctx, p.ID); !errors.Is(err, store.ErrNotTrashed) {
 		t.Fatalf("live purge: %v", err)
+	}
+	if ok, _ := f.s.IsWatching(f.ctx, f.user.ID, domain.WatchTargetPage, p.ID); !ok {
+		t.Fatal("rejected purge must keep watches")
 	}
 	if err := f.s.TrashPage(f.ctx, p.ID, f.user.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.s.PurgePage(f.ctx, p.ID); err != nil {
 		t.Fatal(err)
+	}
+	for _, id := range []uuid.UUID{p.ID, c.ID} {
+		if ok, _ := f.s.IsWatching(f.ctx, f.user.ID, domain.WatchTargetPage, id); ok {
+			t.Fatalf("watch on purged page %s must be removed", id)
+		}
+	}
+	if ok, _ := f.s.IsWatching(f.ctx, f.user.ID, domain.WatchTargetPage, other.ID); !ok {
+		t.Fatal("unrelated watch must remain")
 	}
 	for _, id := range []uuid.UUID{p.ID, c.ID} {
 		if _, err := f.s.GetPage(f.ctx, id); !errors.Is(err, store.ErrNotFound) {

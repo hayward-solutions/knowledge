@@ -8,3 +8,7 @@ Dockerfile
 .dockerignore
 .gitignore
 *.tsbuildinfo
+e2e
+playwright.config.ts
+playwright-report
+test-results

@@ -1123,3 +1123,22 @@ func TestPagesPurgeRemovesAttachmentObjects(t *testing.T) {
 		t.Fatal("unrelated objects must survive")
 	}
 }
+
+func TestPagesRejectOversizedVersionNumbers(t *testing.T) {
+	w := pagesSetup(t)
+	id := pagesID(w.create("ed1", "Doc", nil))
+	body := map[string]any{"title": "Doc", "content_json": nil, "content_html": "<p>x</p>", "base_version": 3000000000}
+	if r := w.as("ed1").do("PUT", pagesPath(id, "/draft"), body); r.status != 400 {
+		t.Fatalf("draft: %d %s", r.status, r.raw)
+	}
+	if r := w.as("ed1").do("POST", pagesPath(id, "/publish"), body); r.status != 400 {
+		t.Fatalf("publish: %d %s", r.status, r.raw)
+	}
+	body["base_version"] = -1
+	if r := w.as("ed1").do("POST", pagesPath(id, "/publish"), body); r.status != 400 {
+		t.Fatalf("negative: %d %s", r.status, r.raw)
+	}
+	if r := w.as("ed1").do("GET", pagesPath(id, "/versions/3000000000"), nil); r.status != 400 {
+		t.Fatalf("version path: %d %s", r.status, r.raw)
+	}
+}

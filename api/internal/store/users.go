@@ -288,3 +288,10 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, issuer, subject, email, disp
 	})
 	return u, err
 }
+
+func (s *Store) FirstSystemAdminID(ctx context.Context) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := s.Pool.QueryRow(ctx,
+		`SELECT id FROM users WHERE is_system_admin AND disabled_at IS NULL ORDER BY created_at, id LIMIT 1`).Scan(&id)
+	return id, notFoundIf(err)
+}

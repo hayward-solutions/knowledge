@@ -3,7 +3,7 @@
 import { isNodeSelection, type Editor } from "@tiptap/core";
 import { NodeSelection } from "@tiptap/pm/state";
 import { CellSelection } from "@tiptap/pm/tables";
-import { BubbleMenu, useEditorState } from "@tiptap/react";
+import { useEditorState } from "@tiptap/react";
 import {
   BetweenHorizontalEnd,
   BetweenHorizontalStart,
@@ -26,6 +26,7 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import { CODE_LANGUAGES } from "./lowlight";
 import { PANEL_COLORS, STATUS_COLORS } from "./extensions";
+import { SafeBubbleMenu as BubbleMenu } from "./SafeBubbleMenu";
 import { ToolbarButton, ToolbarSeparator } from "./ToolbarButton";
 import type { CommentSelection } from "./types";
 

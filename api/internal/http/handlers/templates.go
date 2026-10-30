@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"html"
@@ -35,6 +36,18 @@ func (h *TemplateHandler) Routes(r chi.Router) {
 	r.With(mw.RequireAuth(h.Store)).Get("/templates/{templateID}", h.Get)
 	r.With(mw.RequireAuth(h.Store)).Patch("/templates/{templateID}", h.Update)
 	r.With(mw.RequireAuth(h.Store)).Delete("/templates/{templateID}", h.Delete)
+}
+
+func SeedStarterTemplates(ctx context.Context, s *store.Store) error {
+	adminID, err := s.FirstSystemAdminID(ctx)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = s.SeedTemplatesIfEmpty(ctx, adminID, templateStarters())
+	return err
 }
 
 func (h *TemplateHandler) List(w http.ResponseWriter, r *http.Request) {

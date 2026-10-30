@@ -550,17 +550,20 @@ func (s *Store) RestorePage(ctx context.Context, id uuid.UUID) (domain.Page, err
 }
 
 func (s *Store) PurgePage(ctx context.Context, id uuid.UUID) error {
-	tag, err := s.Pool.Exec(ctx, `DELETE FROM pages WHERE id = $1 AND status = 'trashed'`, id)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		if _, gerr := s.GetPage(ctx, id); gerr != nil {
-			return gerr
+	return s.WithTx(ctx, func(tx pgx.Tx) error {
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM pages WHERE id = $1 FOR UPDATE`, id).Scan(&status); err != nil {
+			return notFoundIf(err)
 		}
-		return ErrNotTrashed
-	}
-	return nil
+		if status != string(domain.PageStatusTrashed) {
+			return ErrNotTrashed
+		}
+		if err := deletePageSubtreeWatches(ctx, tx, id); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `DELETE FROM pages WHERE id = $1 AND status = 'trashed'`, id)
+		return err
+	})
 }
 
 func (s *Store) RecordPageView(ctx context.Context, userID, pageID uuid.UUID) error {

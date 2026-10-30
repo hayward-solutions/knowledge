@@ -19,13 +19,9 @@ function SpaceFrame({ spaceKey, children }: { spaceKey: string; children: React.
   let body: React.ReactNode;
 
   if (value) {
-    sidebar = (
-      <SpaceProvider value={value}>
-        <SpaceSidebar />
-      </SpaceProvider>
-    );
+    sidebar = <SpaceSidebar />;
     body = (
-      <SpaceProvider value={value}>
+      <>
         {value.archived && (
           <div
             role="status"
@@ -47,7 +43,7 @@ function SpaceFrame({ spaceKey, children }: { spaceKey: string; children: React.
           </div>
         )}
         {children}
-      </SpaceProvider>
+      </>
     );
   } else if (spaceQuery.isPending) {
     sidebar = <ListSkeleton rows={8} />;
@@ -80,7 +76,11 @@ function SpaceFrame({ spaceKey, children }: { spaceKey: string; children: React.
     );
   }
 
-  return <AppShell sidebar={sidebar}>{body}</AppShell>;
+  return (
+    <SpaceProvider value={value}>
+      <AppShell sidebar={sidebar}>{body}</AppShell>
+    </SpaceProvider>
+  );
 }
 
 export default function SpaceLayout({ children }: { children: React.ReactNode }) {

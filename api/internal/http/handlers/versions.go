@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -28,7 +29,7 @@ func (h *VersionHandler) Routes(r chi.Router) {
 
 func pageVersionParam(w http.ResponseWriter, r *http.Request) (int, bool) {
 	n, err := strconv.Atoi(chi.URLParam(r, "version"))
-	if err != nil || n < 1 {
+	if err != nil || n < 1 || n > math.MaxInt32 {
 		httpErr(w, http.StatusBadRequest, "invalid version")
 		return 0, false
 	}

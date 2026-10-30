@@ -60,7 +60,7 @@ export function LabelPicker({
   const options = useMemo<Option[]>(() => {
     const chosen = new Set(selected);
     const list: Option[] = (query.data ?? [])
-      .filter((l) => !chosen.has(l.name))
+      .filter((l) => !chosen.has(l.name) && l.name.startsWith(normalized))
       .map((l) => ({ name: l.name, count: l.page_count }));
     if (
       allowCreate &&

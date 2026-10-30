@@ -36,6 +36,10 @@ func TestSpaceSlugFromTitle(t *testing.T) {
 		"!!!":                    "untitled",
 		"Ünïcode Títle":          "ünïcode-títle",
 		"--leading and trailing": "leading-and-trailing",
+		"Edit":                   "edit-page",
+		" History! ":             "history-page",
+		"ATTACHMENTS":            "attachments-page",
+		"Edit notes":             "edit-notes",
 	}
 	for in, want := range cases {
 		if got := store.SlugFromTitle(in); got != want {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -373,6 +374,10 @@ func (h *PageHandler) SaveDraft(w http.ResponseWriter, r *http.Request) {
 	if !pageDecode(w, r, &body, false) {
 		return
 	}
+	if body.BaseVersion < 0 || body.BaseVersion > math.MaxInt32 {
+		httpErr(w, http.StatusBadRequest, "invalid base_version")
+		return
+	}
 	title := strings.TrimSpace(body.Title)
 	if !pageValidTitle(title) {
 		httpErr(w, http.StatusBadRequest, "title too long")
@@ -437,6 +442,10 @@ func (h *PageHandler) Publish(w http.ResponseWriter, r *http.Request) {
 		Force       bool            `json:"force"`
 	}
 	if !pageDecode(w, r, &body, false) {
+		return
+	}
+	if body.BaseVersion < 0 || body.BaseVersion > math.MaxInt32 {
+		httpErr(w, http.StatusBadRequest, "invalid base_version")
 		return
 	}
 	title := strings.TrimSpace(body.Title)

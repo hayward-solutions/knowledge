@@ -79,6 +79,8 @@ type spaceRower interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+var reservedSlugs = map[string]bool{"edit": true, "history": true, "attachments": true}
+
 func SlugFromTitle(title string) string {
 	var b strings.Builder
 	runes := 0
@@ -102,6 +104,9 @@ func SlugFromTitle(title string) string {
 	slug := strings.Trim(b.String(), "-")
 	if slug == "" {
 		return "untitled"
+	}
+	if reservedSlugs[slug] {
+		return slug + "-page"
 	}
 	return slug
 }

@@ -16,6 +16,7 @@ jobs:
     outputs:
       api: ${{ steps.filter.outputs.api }}
       web: ${{ steps.filter.outputs.web }}
+      stack: ${{ steps.filter.outputs.stack }}
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +28,9 @@ jobs:
               - 'api/**'
             web:
               - 'web/**'
+            stack:
+              - 'docker-compose.yml'
+              - '.env.example'
 
   api:
     needs: changes
@@ -79,3 +83,53 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  e2e:
+    needs: changes
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.stack == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare environment
+        run: cp .env.example .env
+
+      - name: Start the stack
+        run: docker compose up -d --build --wait
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Run e2e tests
+        working-directory: web
+        run: npm run e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 7
+
+      - name: Dump stack logs
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v

@@ -1,10 +1,7 @@
 import { ApiError } from "@/lib/api";
 
-const RESERVED_SLUGS = new Set(["edit", "history", "attachments"]);
-
 export function slugSegment(slug: string | undefined | null): string {
-  const s = slug && slug.length > 0 ? slug : "untitled";
-  return RESERVED_SLUGS.has(s) ? `${s}-page` : s;
+  return slug && slug.length > 0 ? slug : "untitled";
 }
 
 export function pageHref(

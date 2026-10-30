@@ -24,7 +24,7 @@ export function SpaceProvider({
   value,
   children,
 }: {
-  value: SpaceContextValue;
+  value: SpaceContextValue | null;
   children: ReactNode;
 }) {
   return <SpaceContext.Provider value={value}>{children}</SpaceContext.Provider>;

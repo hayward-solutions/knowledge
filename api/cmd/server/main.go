@@ -81,6 +81,10 @@ func run() error {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
 
+	if err := handlers.SeedStarterTemplates(ctx, s); err != nil {
+		log.Printf("seed starter templates: %v", err)
+	}
+
 	oidcCfg, err := auth.LoadOIDC(ctx, cfg.OIDC)
 	if err != nil {
 		return fmt.Errorf("oidc: %w", err)

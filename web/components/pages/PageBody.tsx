@@ -160,7 +160,6 @@ export function PageBody({ pageId, canonical = true }: { pageId: string; canonic
 
           <div className="mt-10 print:hidden">
             <PageComments
-              key={`${page.status}-${archived}`}
               page={page}
               canComment={!archived}
               canEdit={isAdmin}

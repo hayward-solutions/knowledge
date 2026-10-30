@@ -1,6 +1,7 @@
 package handlers_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -8,6 +9,7 @@ import (
 
 	"github.com/hayward-solutions/knowledge/api/internal/content"
 	"github.com/hayward-solutions/knowledge/api/internal/domain"
+	"github.com/hayward-solutions/knowledge/api/internal/http/handlers"
 	"github.com/hayward-solutions/knowledge/api/internal/testutil"
 )
 
@@ -488,5 +490,21 @@ func TestTemplatesCrossSpaceTemplateRejectedOnPageCreate(t *testing.T) {
 	same := admin.do("POST", "/api/v1/spaces/OPS/pages", map[string]any{"title": "ok", "template_id": tpl.body["id"]})
 	if same.status != 201 {
 		t.Fatalf("same-space template: %d %s", same.status, same.raw)
+	}
+}
+
+func TestTemplatesSeedAtStartupVisibleToEveryone(t *testing.T) {
+	w := newTemplateWorld(t)
+	ctx := context.Background()
+	if err := handlers.SeedStarterTemplates(ctx, w.e.store); err != nil {
+		t.Fatal(err)
+	}
+	if err := handlers.SeedStarterTemplates(ctx, w.e.store); err != nil {
+		t.Fatal(err)
+	}
+	want := "Decision record|How-to guide|Meeting notes|Retrospective"
+	user := w.as(t, w.outsider)
+	if got := templateTestNames(t, user.do("GET", "/api/v1/templates", nil)); templateTestJoin(got) != want {
+		t.Fatalf("starters %v", got)
 	}
 }
