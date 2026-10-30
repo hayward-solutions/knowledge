@@ -1,0 +1,10 @@
+node_modules
+.next
+out
+.turbo
+.env
+.env.local
+Dockerfile
+.dockerignore
+.gitignore
+*.tsbuildinfo
