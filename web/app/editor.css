@@ -158,6 +158,18 @@
 .kn-content li > ol {
   margin: 0.15em 0;
 }
+.kn-content [data-align="left"] {
+  text-align: left;
+}
+.kn-content [data-align="center"] {
+  text-align: center;
+}
+.kn-content [data-align="right"] {
+  text-align: right;
+}
+.kn-content [data-align="justify"] {
+  text-align: justify;
+}
 .kn-content blockquote {
   margin: 0.9em 0;
   padding: 0.1em 0 0.1em 1em;

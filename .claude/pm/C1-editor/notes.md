@@ -76,7 +76,7 @@ Any container that shows page or comment content gets class `kn-content`. The ed
 ## Contract notes and uncertainties (for the integration agent)
 
 - `__contract__.ts` exports `CONTRACT_SAMPLES` (one HTML snippet per node, taken from real `getHTML()` output) to diff against the Go sanitiser.
-- Text alignment: TextAlign emits `style="text-align: ..."`, which the sanitiser strips. Alignment survives in `content_json` but is lost in the HTML the viewer renders. Either allow a class/`data-align` on `p`/`h*` in the sanitiser and mirror it in the extension, or drop the alignment buttons.
+- Text alignment: `KnTextAlign` (extensions/text-align.ts) emits `data-align="center|right|justify"` on p and h1-h6 (nothing for left) and parses `data-align`, falling back to `style.textAlign`. Styled by `.kn-content [data-align=...]`. Requires the sanitiser to admit `data-align` with left|center|right|justify on p and h1-h6.
 - Page links in `content_json` are node type `pageLink` (attrs `pageId`, `title`, `href`). `content/text.go` does not treat `pageLink` as an inline leaf, so link titles are missing from `content_text` (search). Add `pageLink` to `inlineLeaves` and read `title` in `leafText`.
 - Mention JSON attrs: `id`, `label`, `mentionSuggestionChar` (always "@"). `MentionedUserIDs` reads `id` only, which matches.
 - Status JSON attrs: `text`, `color` (matches `leafText`'s `text` key).
@@ -90,7 +90,7 @@ Any container that shows page or comment content gets class `kn-content`. The ed
 
 ## Edit page behaviour and decisions
 
-- Route is `/spaces/[key]/pages/[id]/edit`, wrapped in `AppShell` (with a breadcrumb top slot). If C2 adds `app/spaces/[key]/layout.tsx` that already renders `AppShell`, remove the `AppShell` wrapper from `EditPage` in the edit page file (one component, trivial) or the shell will nest.
+- Route is `/spaces/[key]/pages/[id]/edit`. It no longer wraps itself in `AppShell`; it relies on `app/spaces/[key]/layout.tsx` (C2) rendering `AppShell` (auth gate, TopBar, sidebar). The sticky action bar sits at `top-14` under the sticky TopBar and `--kn-toolbar-top` stays 105px (56 TopBar + 49 action bar), so both assume the layout's shell keeps a sticky 56px TopBar.
 - Queries use keys `["editor","page",id]` and `["editor","draft",id]` with `staleTime: Infinity`, `gcTime: 0`, `refetchOnMount: "always"`, so every visit loads fresh data and background refetches never clobber local state. After publishing it invalidates every other query (`qc.invalidateQueries` excluding `"editor"` keys) so the view page and sidebar tree refetch.
 - `base_version`: a fresh edit uses `page.version`; a resumed draft keeps `draft.base_version`, so a draft created before someone else published triggers a 409 on publish (the banner also warns). Discarding the draft resets to `page.version`.
 - Autosave: 1500 ms debounce after any title or content change; in-flight saves are serialised and re-queued; status shows Saving..., Saved HH:mm, Unsaved changes, Save failed with Retry. Closing flushes the draft first and asks to confirm if the flush fails; component unmount also flushes. `beforeunload` guard while unsaved (browser reload/close only; in-app navigation via other links relies on the unmount flush).
@@ -102,3 +102,8 @@ Any container that shows page or comment content gets class `kn-content`. The ed
 ## No new dependencies
 
 Uses only pinned packages. Code highlighting imports `highlight.js/lib/languages/*` (already pinned) into a `createLowlight` subset: bash, css, go, java, js, json, markdown, python, rust, sql, ts, xml/html, yaml.
+
+## Follow-up changes
+
+- Alignment now round-trips via `data-align` (see contract notes).
+- `AppShell` and the breadcrumb top slot were removed from the edit page; the page renders only its own content.

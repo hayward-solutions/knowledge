@@ -23,6 +23,7 @@ var (
 		"status":    true,
 		"image":     true,
 		"emoji":     true,
+		"pageLink":  true,
 		"hardBreak": true,
 	}
 )
@@ -84,6 +85,10 @@ func (b *textBuilder) walk(n pmNode) {
 }
 
 func leafText(n pmNode) string {
+	if n.Type == "pageLink" {
+		v, _ := n.Attrs["title"].(string)
+		return v
+	}
 	for _, k := range []string{"label", "text", "alt"} {
 		if v, ok := n.Attrs[k].(string); ok && v != "" {
 			if n.Type == "mention" && !strings.HasPrefix(v, "@") {

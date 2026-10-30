@@ -95,3 +95,7 @@ TopBar imports both by those exact paths and named exports.
 ### Env
 
 `NEXT_PUBLIC_API_BASE_URL` (empty means same origin), `NEXT_PUBLIC_APP_VERSION` (Docker `VERSION` build arg; defaults to `dev` in the UI). The CSP `connect-src` and `img-src` include the API base. The API base is baked in at build time.
+
+## CSP follow-up (next.config.js)
+
+`script-src` now appends `'unsafe-eval'` only when `process.env.NODE_ENV !== "production"`, so `next dev` hydrates while production builds and images keep the strict policy. Verified by loading the config under both NODE_ENV values: production `script-src 'self' 'unsafe-inline'`, development `script-src 'self' 'unsafe-inline' 'unsafe-eval'`. Lint, typecheck and build pass after the change. One earlier build attempt failed with ENOENT on `.next/standalone` files because another agent's `next build` was running in the same `web/` directory at the same time; the rerun was clean. Concurrent builds in `web/` clobber each other's `.next`.

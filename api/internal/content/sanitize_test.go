@@ -115,6 +115,25 @@ func TestSanitizeKeepsContractElements(t *testing.T) {
 	}
 }
 
+func TestSanitizeDataAlign(t *testing.T) {
+	for _, tag := range []string{"p", "h1", "h2", "h3", "h4", "h5", "h6"} {
+		for _, v := range []string{"left", "center", "right", "justify"} {
+			in := "<" + tag + ` data-align="` + v + `">x</` + tag + ">"
+			if out := SanitizeHTML(in); out != in {
+				t.Errorf("%s data-align=%s altered: %s", tag, v, out)
+			}
+		}
+		in := "<" + tag + ` data-align="center;x" style="text-align:center">x</` + tag + ">"
+		out := SanitizeHTML(in)
+		if strings.Contains(out, "data-align") || strings.Contains(out, "style") {
+			t.Errorf("%s: bad align or style survived: %s", tag, out)
+		}
+	}
+	if out := SanitizeHTML(`<div data-align="left">x</div><li data-align="left">y</li>`); strings.Contains(out, "data-align") {
+		t.Errorf("data-align must only be allowed on p and headings: %s", out)
+	}
+}
+
 func TestSanitizeLinkSchemes(t *testing.T) {
 	for _, href := range []string{"http://a.test/x", "https://a.test/x", "mailto:a@b.test", "/relative/path", "relative/path", "#anchor"} {
 		out := SanitizeHTML(`<a href="` + href + `">x</a>`)

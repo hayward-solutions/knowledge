@@ -10,7 +10,6 @@ import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { TableRow } from "@tiptap/extension-table-row";
 import TaskList from "@tiptap/extension-task-list";
-import TextAlign from "@tiptap/extension-text-align";
 import Typography from "@tiptap/extension-typography";
 import Underline from "@tiptap/extension-underline";
 import StarterKit from "@tiptap/starter-kit";
@@ -28,6 +27,7 @@ import { Panel } from "./panel";
 import { SlashCommand } from "./slash-command";
 import { Status } from "./status";
 import { KnTaskItem } from "./task";
+import { KnTextAlign } from "./text-align";
 import { Toc } from "./toc";
 import { ImageUpload } from "./upload";
 
@@ -55,7 +55,7 @@ export function createExtensions(config: ExtensionConfig): Extensions {
     }),
     Underline,
     Highlight.configure({ multicolor: false }),
-    TextAlign.configure({ types: ["heading", "paragraph"] }),
+    KnTextAlign.configure({ types: ["heading", "paragraph"], defaultAlignment: "left" }),
     Typography,
     Link.configure({
       openOnClick: false,

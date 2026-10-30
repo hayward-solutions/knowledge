@@ -225,3 +225,9 @@ Unchanged: 403 `forbidden` when the caller has access but lacks the permission (
 Tests updated (expected status only, for private non-member access): `middleware/middleware_test.go` (4 cases renamed from "forbidden" to "not found"/"hidden"), `handlers/attachments_test.go` (outsider upload/GET/DELETE on a private page), `comments_test.go` (outsider post/list/patch/delete/resolve; test renamed `TestCommentNonMemberOnPrivateSpaceHidden`), `labels_test.go` (non-member GET/PUT private page labels, private space labels and label pages), `pages_test.go` (outsider create, get, star; the create loop is now a map of expected codes: viewer 403, outsider 404), `spaces_test.go` (outsider GET on private space, already 404 by the time I edited), `versions_test.go` (outsider list versions). Assertions about viewers, editors and internal-space users were left at 403. `search_test.go` had no such assertion.
 
 Gate after the change: `gofmt -l .` clean, `go build ./... && go vet ./... && go test -count=1 ./...` all packages ok (including other agents' packages as of the final run).
+
+## Content package additions (coordinator request)
+
+- `content/sanitize.go`: `data-align` is admitted on `p` and `h1`-`h6` when its value is exactly `left|center|right|justify`. Any other value is dropped, `style` is still stripped, and the attribute is rejected on every other element. Test: `TestSanitizeDataAlign`.
+- `content/text.go`: ProseMirror node type `pageLink` is an inline leaf whose text is `attrs.title` only (no fallback to `label`/`text`/`alt`; empty when absent), so page-link titles are indexed and appear inline in the surrounding line. Test: `TestExtractTextPageLink`.
+- Gate: gofmt clean, `go build ./... && go vet ./... && go test -count=1 ./...` all ok.

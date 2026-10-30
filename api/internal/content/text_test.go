@@ -87,3 +87,19 @@ func TestMentionedUserIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractTextPageLink(t *testing.T) {
+	doc := `{"type":"doc","content":[
+	  {"type":"paragraph","content":[
+	    {"type":"text","text":"See"},
+	    {"type":"pageLink","attrs":{"pageId":"` + testPageID + `","title":"Deployment guide","label":"ignored"}},
+	    {"type":"text","text":"for details"}
+	  ]},
+	  {"type":"paragraph","content":[{"type":"pageLink","attrs":{"pageId":"x"}}]}
+	]}`
+	got := ExtractText([]byte(doc))
+	want := "See Deployment guide for details"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

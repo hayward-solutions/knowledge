@@ -1,0 +1,239 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hi "
+        },
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+            "label": "Ada Lovelace",
+            "mentionSuggestionChar": "@"
+          }
+        },
+        {
+          "type": "text",
+          "text": ", see "
+        },
+        {
+          "type": "pageLink",
+          "attrs": {
+            "pageId": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c",
+            "title": "Getting started",
+            "href": "/spaces/ENG/pages/0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c/getting-started"
+          }
+        },
+        {
+          "type": "text",
+          "text": " status "
+        },
+        {
+          "type": "status",
+          "attrs": {
+            "text": "DONE",
+            "color": "green"
+          }
+        }
+      ]
+    },
+    {
+      "type": "toc"
+    },
+    {
+      "type": "panel",
+      "attrs": {
+        "color": "info"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Info body"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "panel",
+      "attrs": {
+        "color": "note"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Note body"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "panel",
+      "attrs": {
+        "color": "success"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Success body"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "panel",
+      "attrs": {
+        "color": "warning"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Warning body"
+            }
+          ]
+        },
+        {
+          "type": "bulletList",
+          "content": [
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "item"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "panel",
+      "attrs": {
+        "color": "error"
+      },
+      "content": [
+        {
+          "type": "codeBlock",
+          "attrs": {
+            "language": "sh"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "rm -rf /"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "expand",
+      "content": [
+        {
+          "type": "expandSummary",
+          "content": [
+            {
+              "type": "text",
+              "text": "More <detail> & stuff"
+            }
+          ]
+        },
+        {
+          "type": "expandBody",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Hidden text"
+                }
+              ]
+            },
+            {
+              "type": "bulletList",
+              "content": [
+                {
+                  "type": "listItem",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "x"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "Some "
+        },
+        {
+          "type": "text",
+          "text": "anchored",
+          "marks": [
+            {
+              "type": "bold"
+            },
+            {
+              "type": "comment",
+              "attrs": {
+                "id": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5d"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": " words "
+        },
+        {
+          "type": "text",
+          "text": "here",
+          "marks": [
+            {
+              "type": "comment"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

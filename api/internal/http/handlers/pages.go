@@ -195,7 +195,7 @@ func (h *PageHandler) pageLabels(ctx context.Context, pageID uuid.UUID) ([]domai
 }
 
 func (h *PageHandler) pageWatching(ctx context.Context, pageID, userID uuid.UUID) (bool, error) {
-	return false, nil
+	return h.Store.IsWatching(ctx, userID, domain.WatchTargetPage, pageID)
 }
 
 func (h *PageHandler) Create(w http.ResponseWriter, r *http.Request) {

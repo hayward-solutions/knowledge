@@ -23,8 +23,6 @@ import {
 import { useMe } from "@/lib/auth";
 import { Editor } from "@/components/editor/Editor";
 import type { EditorChange, EditorHandle, UploadedImage } from "@/components/editor/types";
-import { AppShell } from "@/components/layout/AppShell";
-import { Breadcrumbs } from "@/components/layout/Breadcrumbs";
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -61,19 +59,7 @@ function joinNames(users: UserRef[]): string {
 
 export default function EditPage() {
   const params = useParams<{ key: string; id: string }>();
-  const key = String(params.key);
-  const id = String(params.id);
-  return (
-    <AppShell
-      topSlot={
-        <Breadcrumbs
-          items={[{ label: key.toUpperCase(), href: `/spaces/${key}` }, { label: "Edit page" }]}
-        />
-      }
-    >
-      <EditLoader spaceKey={key} pageId={id} />
-    </AppShell>
-  );
+  return <EditLoader spaceKey={String(params.key)} pageId={String(params.id)} />;
 }
 
 function Centered({ children }: { children: React.ReactNode }) {
