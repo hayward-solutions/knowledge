@@ -101,15 +101,14 @@ func (s *Store) SoftDeleteAttachment(ctx context.Context, id uuid.UUID) (domain.
 
 func (s *Store) ListAttachmentObjectKeysUnderPage(ctx context.Context, pageID uuid.UUID) ([]string, error) {
 	rows, err := s.Pool.Query(ctx,
-		`WITH RECURSIVE tree AS (
-		     SELECT id FROM pages WHERE id = $1
-		     UNION ALL
-		     SELECT p.id FROM pages p JOIN tree t ON p.parent_id = t.id
+		`WITH RECURSIVE tree(id, depth) AS (
+		     SELECT id, 0 FROM pages WHERE id = $1
+		     UNION
+		     SELECT p.id, t.depth + 1 FROM pages p JOIN tree t ON p.parent_id = t.id WHERE t.depth < 1000
 		 )
 		 SELECT a.s3_key
 		 FROM attachments a
-		 JOIN tree t ON t.id = a.page_id
-		 WHERE a.deleted_at IS NULL
+		 WHERE a.page_id IN (SELECT id FROM tree) AND a.deleted_at IS NULL
 		 ORDER BY a.created_at, a.id`, pageID)
 	if err != nil {
 		return nil, err

@@ -3,7 +3,11 @@ import { normalizeQuote } from "./commentUtils";
 export interface AnchorThread {
   id: string;
   quote: string;
+  prefix?: string;
+  suffix?: string;
 }
+
+export const CONTEXT_LENGTH = 32;
 
 const BLOCK_SELECTOR =
   "p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, summary, figcaption, dt, dd, div";
@@ -19,6 +23,7 @@ interface Corpus {
   text: string;
   chars: CharRef[];
   nodes: Text[];
+  marked: boolean[];
 }
 
 function buildCorpus(root: HTMLElement): Corpus {
@@ -36,6 +41,7 @@ function buildCorpus(root: HTMLElement): Corpus {
   let text = "";
   const chars: CharRef[] = [];
   const nodes: Text[] = [];
+  const marked: boolean[] = [];
   let lastWasSpace = true;
   let previousBlock: Element | null = null;
   let pendingBreak = false;
@@ -59,6 +65,7 @@ function buildCorpus(root: HTMLElement): Corpus {
     pendingBreak = false;
     previousBlock = block;
     nodes.push(node);
+    marked.push(node.parentElement?.closest(MARK_SELECTOR) != null);
     lastNode = node;
     const value = node.data;
     for (let i = 0; i < value.length; i += 1) {
@@ -74,7 +81,7 @@ function buildCorpus(root: HTMLElement): Corpus {
       }
     }
   }
-  return { text, chars, nodes };
+  return { text, chars, nodes, marked };
 }
 
 function wrapSegment(node: Text, id: string): void {
@@ -89,11 +96,82 @@ function wrapSegment(node: Text, id: string): void {
   span.appendChild(node);
 }
 
-export function anchorQuote(root: HTMLElement, id: string, rawQuote: string): boolean {
+function commonSuffixLength(a: string, b: string): number {
+  let n = 0;
+  while (n < a.length && n < b.length && a[a.length - 1 - n] === b[b.length - 1 - n]) n += 1;
+  return n;
+}
+
+function commonPrefixLength(a: string, b: string): number {
+  let n = 0;
+  while (n < a.length && n < b.length && a[n] === b[n]) n += 1;
+  return n;
+}
+
+interface Candidate {
+  index: number;
+  score: number;
+  clean: boolean;
+}
+
+function pickCandidate(
+  corpus: Corpus,
+  quote: string,
+  prefix: string,
+  suffix: string
+): number {
+  const hasContext = prefix !== "" || suffix !== "";
+  const candidates: Candidate[] = [];
+  let from = 0;
+  for (;;) {
+    const index = corpus.text.indexOf(quote, from);
+    if (index < 0) break;
+    from = index + 1;
+    const start = corpus.chars[index];
+    const end = corpus.chars[index + quote.length - 1];
+    if (!start || !end) continue;
+    const first = corpus.nodes.indexOf(start.node);
+    const last = corpus.nodes.indexOf(end.node);
+    if (first < 0 || last < first) continue;
+    let clean = true;
+    for (let i = first; i <= last; i += 1) {
+      if (corpus.marked[i]) {
+        clean = false;
+        break;
+      }
+    }
+    const score = hasContext
+      ? commonSuffixLength(corpus.text.slice(0, index), prefix) +
+        commonPrefixLength(corpus.text.slice(index + quote.length), suffix)
+      : 0;
+    candidates.push({ index, score, clean });
+  }
+  if (candidates.length === 0) return -1;
+  const best = (list: Candidate[]) =>
+    list.reduce((a, c) => (c.score > a.score ? c : a), list[0]);
+  const clean = candidates.filter((c) => c.clean);
+  if (clean.length === 0) return best(candidates).index;
+  const bestClean = best(clean);
+  if (hasContext) {
+    const bestAny = best(candidates);
+    if (bestAny.score > bestClean.score) return bestAny.index;
+  }
+  return bestClean.index;
+}
+
+export function anchorQuote(
+  root: HTMLElement,
+  id: string,
+  rawQuote: string,
+  rawPrefix = "",
+  rawSuffix = ""
+): boolean {
   const quote = normalizeQuote(rawQuote);
   if (!quote) return false;
   const corpus = buildCorpus(root);
-  const index = corpus.text.indexOf(quote);
+  const prefix = rawPrefix.replace(/\s+/g, " ");
+  const suffix = rawSuffix.replace(/\s+/g, " ");
+  const index = pickCandidate(corpus, quote, prefix, suffix);
   if (index < 0) return false;
   const start = corpus.chars[index];
   const end = corpus.chars[index + quote.length - 1];
@@ -138,7 +216,8 @@ export function syncAnchors(root: HTMLElement, threads: AnchorThread[]): Set<str
   unwrapClientAnchors(root, wanted);
   const found = new Set<string>();
   for (const thread of threads) {
-    if (hasMark(root, thread.id) || anchorQuote(root, thread.id, thread.quote)) {
+    if (hasMark(root, thread.id) ||
+      anchorQuote(root, thread.id, thread.quote, thread.prefix, thread.suffix)) {
       found.add(thread.id);
     }
   }
@@ -161,4 +240,38 @@ export function scrollMarkIntoView(root: HTMLElement, id: string): void {
   const marks = findMarks(root, id);
   if (marks.length === 0) return;
   marks[0].scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+export function captureContext(
+  root: HTMLElement,
+  range: Range,
+  quote: string
+): { prefix: string; suffix: string } | null {
+  if (!quote) return null;
+  const corpus = buildCorpus(root);
+  const count = corpus.chars.length;
+  if (count === 0) return null;
+  const compare = (i: number) => {
+    const ref = corpus.chars[i];
+    try {
+      return range.comparePoint(ref.node, ref.offset);
+    } catch {
+      return 1;
+    }
+  };
+  let lo = 0;
+  let hi = count;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (compare(mid) < 0) lo = mid + 1;
+    else hi = mid;
+  }
+  let start = lo;
+  while (start < count && corpus.text[start] === " ") start += 1;
+  if (!corpus.text.startsWith(quote, start)) return null;
+  const end = start + quote.length;
+  return {
+    prefix: corpus.text.slice(Math.max(0, start - CONTEXT_LENGTH), start),
+    suffix: corpus.text.slice(end, end + CONTEXT_LENGTH),
+  };
 }

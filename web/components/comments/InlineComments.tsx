@@ -35,7 +35,12 @@ export function InlineComments({
     () =>
       open
         .filter((t) => !isDeleted(t) && t.inline_anchor)
-        .map((t) => ({ id: t.id, quote: t.inline_anchor?.quoted_text ?? "" })),
+        .map((t) => ({
+          id: t.id,
+          quote: t.inline_anchor?.quoted_text ?? "",
+          prefix: t.inline_anchor?.prefix,
+          suffix: t.inline_anchor?.suffix,
+        })),
     [open]
   );
 

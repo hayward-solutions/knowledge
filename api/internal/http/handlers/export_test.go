@@ -11,9 +11,11 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -585,5 +587,80 @@ func TestImportRawFilenameNotBasenamed(t *testing.T) {
 	pages := exportPages(t, r)
 	if len(pages) != 3 || pages[0]["title"] != "Guides" || pages[1]["title"] != "Win" || pages[2]["title"] != "Windows Path" {
 		t.Fatalf("pages %v", pages)
+	}
+}
+
+func TestImportHardLimits(t *testing.T) {
+	w := exportSetup(t, nil)
+	ed := w.as("ed1")
+	const path = "/api/v1/spaces/ENG/import"
+	deep := strings.Repeat("d/", 11) + "x.md"
+	if r := exportUpload(t, ed, path, []exportFile{{deep, "x"}}, nil); r.status != 400 {
+		t.Fatalf("11 dirs: %d %s", r.status, r.raw)
+	}
+	ok10 := strings.Repeat("d/", 10) + "x.md"
+	if r := exportUpload(t, ed, path, []exportFile{{ok10, "x"}}, nil); r.status != 201 {
+		t.Fatalf("10 dirs: %d %s", r.status, r.raw)
+	}
+	cases := []struct {
+		name  string
+		files []exportFile
+		want  int
+	}{
+		{"very deep path", []exportFile{{strings.Repeat("d/", 20000) + "x.md", "x"}}, 400},
+		{"long segment", []exportFile{{strings.Repeat("s", 121) + "/x.md", "x"}}, 400},
+		{"long filename", []exportFile{{strings.Repeat("f", 253) + ".md", "x"}}, 400},
+		{"oversized file", []exportFile{{"big.md", strings.Repeat("x", 2<<20+1)}}, 413},
+		{"deep blockquote", []exportFile{{"q.md", strings.Repeat(">", 200) + " x"}}, 400},
+		{"deep list", []exportFile{{"l.md", strings.Repeat("- ", 40) + "x"}}, 400},
+		{"too many lines", []exportFile{{"lines.md", strings.Repeat("a\n", 20001)}}, 400},
+	}
+	for _, c := range cases {
+		start := time.Now()
+		r := exportUpload(t, ed, path, c.files, nil)
+		if r.status != c.want {
+			t.Fatalf("%s: %d %.200s", c.name, r.status, r.raw)
+		}
+		if time.Since(start) > 3*time.Second {
+			t.Fatalf("%s took %v", c.name, time.Since(start))
+		}
+	}
+	var many []exportFile
+	for i := 0; i < 101; i++ {
+		many = append(many, exportFile{"f" + strconv.Itoa(i) + ".md", "x"})
+	}
+	if r := exportUpload(t, ed, path, many, nil); r.status != 400 {
+		t.Fatalf("101 files: %d %s", r.status, r.raw)
+	}
+	many = many[:100]
+	if r := exportUpload(t, ed, path, many, nil); r.status != 201 {
+		t.Fatalf("100 files: %d %s", r.status, r.raw)
+	}
+	var pageHeavy []exportFile
+	for i := 0; i < 100; i++ {
+		pageHeavy = append(pageHeavy, exportFile{"d" + strconv.Itoa(i) + "/a/b/c/d/x.md", "x"})
+	}
+	if r := exportUpload(t, ed, path, pageHeavy, nil); r.status != 400 {
+		t.Fatalf("page cap: %d %s", r.status, r.raw)
+	}
+}
+
+func TestImportTreeDepthCap(t *testing.T) {
+	w := exportSetup(t, nil)
+	parent := w.home
+	for i := 0; i < 60; i++ {
+		parent = w.page("ed1", "L"+strconv.Itoa(i), &parent, "<p>x</p>", nil)
+	}
+	ed := w.as("ed1")
+	body := map[string]string{"parent_id": parent.String()}
+	if r := exportUpload(t, ed, "/api/v1/spaces/ENG/import", []exportFile{{"a/b/c/d/e/f/x.md", "x"}}, body); r.status != 400 {
+		t.Fatalf("too deep: %d %s", r.status, r.raw)
+	}
+	if r := exportUpload(t, ed, "/api/v1/spaces/ENG/import", []exportFile{{"a/b/x.md", "x"}}, body); r.status != 201 {
+		t.Fatalf("within depth: %d %s", r.status, r.raw)
+	}
+	var count int
+	if err := w.store.Pool.QueryRow(context.Background(), `SELECT count(*) FROM pages WHERE title IN ('A','B','C','D','E','F')`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("rejected import must not leave pages: %d %v", count, err)
 	}
 }

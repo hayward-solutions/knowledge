@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
@@ -53,6 +54,23 @@ function SidebarLink({
   );
 }
 
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+export const SIDEBAR_ID = "app-sidebar";
+
+function useIsDesktop(): boolean {
+  const [desktop, setDesktop] = useState(true);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 768px)");
+    const update = () => setDesktop(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return desktop;
+}
+
 export function Sidebar({
   mobileOpen = false,
   onMobileClose,
@@ -67,6 +85,53 @@ export function Sidebar({
   const spaces = useQuery({ queryKey: ["spaces"], queryFn: listSpaces });
   const key = activeSpaceKey(pathname);
   const active = spaces.data?.find((s) => s.key === key);
+  const isDesktop = useIsDesktop();
+  const asideRef = useRef<HTMLElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const drawerOpen = mobileOpen && !isDesktop;
+  const hidden = !isDesktop && !mobileOpen;
+
+  useEffect(() => {
+    asideRef.current?.toggleAttribute("inert", hidden);
+  }, [hidden]);
+
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const returnTo = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onMobileClose?.();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const aside = asideRef.current;
+      if (!aside) return;
+      const items = Array.from(aside.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+        (el) => el.offsetParent !== null
+      );
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const activeEl = document.activeElement;
+      if (!aside.contains(activeEl)) {
+        e.preventDefault();
+        first.focus();
+      } else if (e.shiftKey && activeEl === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && activeEl === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      if (returnTo && document.contains(returnTo)) returnTo.focus();
+    };
+  }, [drawerOpen, onMobileClose]);
 
   return (
     <>
@@ -79,9 +144,15 @@ export function Sidebar({
         )}
       />
       <aside
+        id={SIDEBAR_ID}
+        ref={asideRef}
+        role={drawerOpen ? "dialog" : undefined}
+        aria-modal={drawerOpen ? true : undefined}
+        aria-label={drawerOpen ? "Navigation" : undefined}
+        aria-hidden={hidden ? true : undefined}
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex h-screen w-[84vw] max-w-[300px] flex-col border-r border-ink-200 bg-ink-0 shadow-drawer transition-transform duration-200 md:sticky md:top-0 md:z-auto md:w-64 md:max-w-none md:shrink-0 md:translate-x-0 md:shadow-none",
-          mobileOpen ? "translate-x-0" : "-translate-x-full"
+          "fixed inset-y-0 left-0 z-50 flex h-screen w-[84vw] max-w-[300px] flex-col border-r border-ink-200 bg-ink-0 shadow-drawer transition-[transform,visibility] duration-200 md:sticky md:top-0 md:z-auto md:w-64 md:max-w-none md:shrink-0 md:translate-x-0 md:shadow-none",
+          mobileOpen ? "visible translate-x-0" : "invisible -translate-x-full md:visible"
         )}
       >
         <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-ink-200 px-4">
@@ -95,6 +166,7 @@ export function Sidebar({
           </Link>
           {onMobileClose && (
             <button
+              ref={closeRef}
               type="button"
               onClick={onMobileClose}
               aria-label="Close navigation"

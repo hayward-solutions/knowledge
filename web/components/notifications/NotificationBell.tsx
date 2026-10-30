@@ -5,22 +5,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, CheckCheck } from "lucide-react";
 import {
-  NOTIFICATIONS_STREAM_PATH,
-  getUnreadCount,
   listNotifications,
   markNotificationsRead,
   type Notification,
 } from "@/lib/api";
-import { useEventStream } from "@/lib/sse";
 import { Button } from "@/components/ui/Button";
 import { Spinner } from "@/components/ui/Spinner";
 import { useToast } from "@/components/ui/Toast";
-import { NotificationItem, notificationSummary } from "./NotificationItem";
-import { isNotificationLike, unreadCountFrom } from "./format";
+import { NotificationItem } from "./NotificationItem";
+import { UNREAD_KEY, useNotifications } from "./NotificationsProvider";
 import { useSpaceKeys } from "./useSpaceKeys";
 
 const LATEST_LIMIT = 8;
-const UNREAD_KEY = ["unread"] as const;
 const LATEST_KEY = ["notifications", "latest"] as const;
 
 export function NotificationBell() {
@@ -31,13 +27,7 @@ export function NotificationBell() {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const spaceKeys = useSpaceKeys(open);
 
-  const unread = useQuery({
-    queryKey: UNREAD_KEY,
-    queryFn: getUnreadCount,
-    staleTime: 30_000,
-    retry: false,
-  });
-  const count = unread.data ?? 0;
+  const { unread: count } = useNotifications();
 
   const latest = useQuery({
     queryKey: LATEST_KEY,
@@ -70,19 +60,6 @@ export function NotificationBell() {
     },
     [markRead, qc]
   );
-
-  useEventStream(NOTIFICATIONS_STREAM_PATH, {
-    unread_count: (data: unknown) => {
-      const n = unreadCountFrom(data);
-      if (n !== null) qc.setQueryData(UNREAD_KEY, n);
-      else qc.invalidateQueries({ queryKey: UNREAD_KEY });
-    },
-    notification: (data: unknown) => {
-      qc.invalidateQueries({ queryKey: ["notifications"] });
-      qc.invalidateQueries({ queryKey: UNREAD_KEY });
-      toast.info(isNotificationLike(data) ? notificationSummary(data) : "You have a new notification");
-    },
-  });
 
   useEffect(() => {
     if (!open) return;

@@ -107,7 +107,7 @@ func (w *world) notifications(u domain.User) []store.NotificationView {
 
 func (w *world) activity(spaceID uuid.UUID) []store.ActivityView {
 	w.t.Helper()
-	list, err := w.s.ListSpaceActivity(w.ctx, spaceID, w.actor.ID, true, nil, 100)
+	list, err := w.s.ListSpaceActivity(w.ctx, spaceID, w.actor.ID, domain.RoleAdmin, nil, 100)
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -584,5 +584,68 @@ func TestHandleIgnoresUnknownEventsAndMissingRows(t *testing.T) {
 	w.publish(domain.CommentCreated{CommentID: uuid.Must(uuid.NewV7()), PageID: w.page, SpaceID: w.space, ActorID: w.actor.ID})
 	if n := len(w.activity(w.space)); n != 0 {
 		t.Fatalf("activity rows: %d", n)
+	}
+}
+
+func TestPageMentionNotRepeatedWhileUnread(t *testing.T) {
+	w := newWorld(t)
+	ev := domain.PagePublished{
+		PageID: w.page, SpaceID: w.space, ActorID: w.actor.ID, Version: 2,
+		MentionedUserIDs: []uuid.UUID{w.mention.ID},
+	}
+	w.publish(ev)
+	ev.Version = 3
+	w.publish(ev)
+	if got := w.typesFor(w.mention); !equalStrings(got, []string{"page.mentioned"}) {
+		t.Fatalf("repeat publish should not re-mention: %v", got)
+	}
+	if n := len(w.created.all()); n != 1 {
+		t.Fatalf("NotificationCreated events: %d", n)
+	}
+
+	other := testutil.CreatePage(t, w.s, w.space, w.actor.ID, "Another page")
+	w.publish(domain.PagePublished{PageID: other, SpaceID: w.space, ActorID: w.actor.ID, Version: 2, MentionedUserIDs: []uuid.UUID{w.mention.ID}})
+	if got := w.typesFor(w.mention); len(got) != 2 {
+		t.Fatalf("mention on a different page is independent: %v", got)
+	}
+}
+
+func TestPageMentionedWatcherFallsBackToWatchNotification(t *testing.T) {
+	w := newWorld(t)
+	w.watch(w.mention, domain.WatchTargetPage, w.page)
+	ev := domain.PagePublished{
+		PageID: w.page, SpaceID: w.space, ActorID: w.actor.ID, Version: 2,
+		MentionedUserIDs: []uuid.UUID{w.mention.ID},
+	}
+	w.publish(ev)
+	ev.Version = 3
+	w.publish(ev)
+	got := w.typesFor(w.mention)
+	if len(got) != 2 {
+		t.Fatalf("got %v", got)
+	}
+	counts := map[string]int{}
+	for _, typ := range got {
+		counts[typ]++
+	}
+	if counts["page.mentioned"] != 1 || counts["page.published"] != 1 {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestPageMentionRenotifiedAfterRead(t *testing.T) {
+	w := newWorld(t)
+	ev := domain.PagePublished{
+		PageID: w.page, SpaceID: w.space, ActorID: w.actor.ID, Version: 2,
+		MentionedUserIDs: []uuid.UUID{w.mention.ID},
+	}
+	w.publish(ev)
+	if _, err := w.s.MarkAllNotificationsRead(w.ctx, w.mention.ID); err != nil {
+		t.Fatal(err)
+	}
+	ev.Version = 3
+	w.publish(ev)
+	if got := w.typesFor(w.mention); len(got) != 2 {
+		t.Fatalf("after reading, a fresh mention event notifies again: %v", got)
 	}
 }

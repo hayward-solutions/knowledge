@@ -76,3 +76,16 @@ Rows: `page.published {title, page_title, version, message?}`, `page.moved {titl
 $ cd api && gofmt -l . && go build ./... && go vet ./... && go test -count=1 ./...
 ```
 All packages ok (handlers, notify, store included, real Postgres testcontainer). `gofmt -l` lists only `internal/content/markdown_test.go`, another agent's in-progress export file; none of mine. `go test -race` passes on notify and the handler tests.
+
+## Final review fixes (review-final-store.md P2-2 notify side, P2-3, P2-4, P3-1)
+
+- `api/migrations/0090_perf_indexes.sql` (Up and Down): `idx_page_views_page(page_id)`, `idx_pages_recent(updated_at DESC, id DESC) WHERE status = 'published'`, `idx_pages_draft_owner(created_by) WHERE status = 'draft'`, `idx_notifications_user_created(user_id, created_at DESC, id DESC)`. 0091 (pg_trgm) and 0092 (constraints) were skipped as instructed. Test: `TestPerfIndexesExist`.
+- Dashboard (`store/dashboard.go`): every section is now one statement of the form `WITH acc AS (accessible spaces, computed once) [, cand AS (...)], top AS (... ORDER BY ... LIMIT n) SELECT ..., EXISTS(children) FROM top`, so `has_children` is evaluated only for the returned rows. `my_drafts` builds `cand` as a UNION of (own draft-status pages left-joined to the caller's `page_drafts`) and (the caller's `page_drafts` rows on non-trashed pages), then applies the same access and hidden-draft predicates. Row sets and ordering are unchanged; the existing dashboard store and handler tests cover them.
+- Notify: before adding `page.mentioned` recipients, `Store.ListUnreadPageMentionUserIDs(page, mentioned)` is consulted and users who already have an unread `page.mentioned` for that page are skipped. A skipped user who also watches the page still gets the normal `page.published` watcher notification; once they mark the mention read, a later event mentioning them notifies again (B2 is making the event carry only new mentions). Tests: `TestPageMentionNotRepeatedWhileUnread`, `TestPageMentionedWatcherFallsBackToWatchNotification`, `TestPageMentionRenotifiedAfterRead`.
+- Not changed (out of the requested scope): the `(created_at, id)` row-value cursor (P3-17) and batching `deliver` (P3-12).
+
+## Security fixes (review-final-api-security.md P2-4)
+
+- `Store.ListSpaceActivity` now takes the caller's effective `domain.Role` instead of an admin bool. Rows with a page id are returned only when the page still exists and: draft, or trashed with `version = 0 AND published_at IS NULL`, are visible to the creator and admins only; other trashed pages need role editor or admin; everything else is visible. Activity rows of purged pages stay in the table but are never returned. Tests: `TestActivityVisibilityByPageState`, `TestNotificationsSurvivePagePurge` (now asserts hidden), handler `TestSpaceActivityHidesTrashedAndPurgedPages`.
+- Recursive CTEs in my files (`ListPublishWatcherIDs`, `ListCommentThreadAuthorIDs`, `deletePageSubtreeWatches`) now use `UNION` with a `(id, depth)` row and `depth < 1000`, so a corrupted parent cycle terminates. Test: `TestRecursiveQueriesTerminateOnCycles` (page and comment cycles built with raw SQL).
+- Not done: skipping `recordActivity` for draft pages at write time (report fix 1) and deleting activity rows on purge; the read-side filter makes both unnecessary for confidentiality.

@@ -667,3 +667,152 @@ func TestPageVisibleAncestors(t *testing.T) {
 		t.Fatalf("editor sees trashed ancestor: %+v", got)
 	}
 }
+
+func TestPageHomeIsNeverTrashedOrMoved(t *testing.T) {
+	f := newPagesFx(t)
+	home := f.publish(f.newPage(nil, "Home").ID, "Home", 0)
+	f.setHome(home.ID)
+	section := f.publish(f.newPage(&home.ID, "Section").ID, "Section", 0)
+
+	if _, err := f.s.MovePage(f.ctx, store.MoveParams{PageID: home.ID, ParentID: &section.ID}); !errors.Is(err, store.ErrHomePage) {
+		t.Fatalf("move home under child: %v", err)
+	}
+	if _, err := f.s.MovePage(f.ctx, store.MoveParams{PageID: home.ID, ParentID: nil}); !errors.Is(err, store.ErrHomePage) {
+		t.Fatalf("reorder home: %v", err)
+	}
+	got, _ := f.s.GetPage(f.ctx, home.ID)
+	if got.ParentID != nil {
+		t.Fatalf("home must not have moved: %+v", got)
+	}
+
+	if _, err := f.s.Pool.Exec(f.ctx, `UPDATE pages SET parent_id = $2 WHERE id = $1`, home.ID, section.ID); err != nil {
+		t.Fatal(err)
+	}
+	deep := f.publish(f.newPage(&home.ID, "Deep").ID, "Deep", 0)
+	if err := f.s.TrashPage(f.ctx, section.ID, f.user.ID); !errors.Is(err, store.ErrHomePage) {
+		t.Fatalf("trash ancestor of home: %v", err)
+	}
+	for _, id := range []uuid.UUID{home.ID, section.ID, deep.ID} {
+		p, _ := f.s.GetPage(f.ctx, id)
+		if p.Status == domain.PageStatusTrashed {
+			t.Fatalf("nothing may be trashed after a refused trash: %+v", p)
+		}
+	}
+	if err := f.s.TrashPage(f.ctx, deep.ID, f.user.ID); err != nil {
+		t.Fatalf("pages outside the home subtree remain trashable: %v", err)
+	}
+}
+
+func (f *pagesFx) chain(n int) []domain.Page {
+	f.t.Helper()
+	out := []domain.Page{f.newPage(nil, "L0")}
+	for i := 1; i < n; i++ {
+		out = append(out, f.newPage(&out[i-1].ID, "L"))
+	}
+	return out
+}
+
+func TestPageTreeDepthLimit(t *testing.T) {
+	f := newPagesFx(t)
+	chain := f.chain(65)
+	deepest := chain[64]
+	if anc, _ := f.s.ListAncestors(f.ctx, deepest.ID); len(anc) != 64 {
+		t.Fatalf("deepest page has 64 ancestors: %d", len(anc))
+	}
+	if _, err := f.s.CreatePage(f.ctx, store.NewPage{SpaceID: f.space, ParentID: &deepest.ID, Title: "x", CreatedBy: f.user.ID}); !errors.Is(err, store.ErrTreeTooDeep) {
+		t.Fatalf("create under depth 64: %v", err)
+	}
+	if _, err := f.s.CreatePage(f.ctx, store.NewPage{SpaceID: f.space, ParentID: &chain[63].ID, Title: "x", CreatedBy: f.user.ID}); err != nil {
+		t.Fatalf("a sibling of the deepest page is at depth 64 and allowed: %v", err)
+	}
+}
+
+func TestPageMoveHonoursDepthAndSubtreeHeight(t *testing.T) {
+	f := newPagesFx(t)
+	chain := f.chain(65)
+	leaf := f.newPage(nil, "Leaf")
+	branch := f.newPage(nil, "Branch")
+	f.newPage(&branch.ID, "Branch child")
+
+	if _, err := f.s.MovePage(f.ctx, store.MoveParams{PageID: leaf.ID, ParentID: &chain[64].ID}); !errors.Is(err, store.ErrTreeTooDeep) {
+		t.Fatalf("leaf under depth-64 parent: %v", err)
+	}
+	if _, err := f.s.MovePage(f.ctx, store.MoveParams{PageID: branch.ID, ParentID: &chain[63].ID}); !errors.Is(err, store.ErrTreeTooDeep) {
+		t.Fatalf("subtree of height 1 under depth-63 parent: %v", err)
+	}
+	if _, err := f.s.MovePage(f.ctx, store.MoveParams{PageID: leaf.ID, ParentID: &chain[63].ID}); err != nil {
+		t.Fatalf("leaf under depth-63 parent fits exactly: %v", err)
+	}
+	if _, err := f.s.MovePage(f.ctx, store.MoveParams{PageID: branch.ID, ParentID: &chain[62].ID}); err != nil {
+		t.Fatalf("subtree of height 1 under depth-62 parent fits exactly: %v", err)
+	}
+	if _, err := f.s.MovePage(f.ctx, store.MoveParams{PageID: chain[1].ID, ParentID: &chain[0].ID, Position: new(int)}); err != nil {
+		t.Fatalf("reorder in place of a full-depth subtree is not a depth change: %v", err)
+	}
+}
+
+func TestPageRestoreHonoursDepthLimit(t *testing.T) {
+	f := newPagesFx(t)
+	chain := f.chain(65)
+	if err := f.s.TrashPage(f.ctx, chain[64].ID, f.user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.RestorePage(f.ctx, chain[64].ID); err != nil {
+		t.Fatalf("restore at the same depth: %v", err)
+	}
+	extra := f.newPage(nil, "Extra")
+	if _, err := f.s.Pool.Exec(f.ctx, `UPDATE pages SET parent_id = $2 WHERE id = $1`, extra.ID, chain[64].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.TrashPage(f.ctx, extra.ID, f.user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.RestorePage(f.ctx, extra.ID); !errors.Is(err, store.ErrTreeTooDeep) {
+		t.Fatalf("restore under a parent of depth 64: %v", err)
+	}
+}
+
+func TestPageRecursiveQueriesTerminateOnCorruptCycle(t *testing.T) {
+	f := newPagesFx(t)
+	a := f.publish(f.newPage(nil, "A").ID, "A", 0)
+	b := f.publish(f.newPage(&a.ID, "B").ID, "B", 0)
+	c := f.publish(f.newPage(&b.ID, "C").ID, "C", 0)
+	leaf := f.newPage(&c.ID, "Leaf")
+	if _, err := f.s.Pool.Exec(f.ctx, `UPDATE pages SET parent_id = $2 WHERE id = $1`, a.ID, c.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(f.ctx, 10*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		anc, err := f.s.ListAncestors(ctx, leaf.ID)
+		if err != nil || len(anc) != 3 {
+			t.Errorf("ancestors on a cycle must be bounded: %v %+v", err, anc)
+		}
+		if _, err := f.s.ListVisibleAncestors(ctx, leaf.ID, f.user.ID, domain.RoleEditor); err != nil {
+			t.Errorf("visible ancestors: %v", err)
+		}
+		if _, err := f.s.MovePage(ctx, store.MoveParams{PageID: b.ID, ParentID: &leaf.ID}); !errors.Is(err, store.ErrPageCycle) {
+			t.Errorf("move into own subtree on a cycle: %v", err)
+		}
+		if _, err := f.s.CreatePage(ctx, store.NewPage{SpaceID: f.space, ParentID: &leaf.ID, Title: "x", CreatedBy: f.user.ID}); err != nil {
+			t.Errorf("create under a cycle member: %v", err)
+		}
+		if err := f.s.TrashPage(ctx, b.ID, f.user.ID); err != nil {
+			t.Errorf("trash on a cycle: %v", err)
+		}
+		if _, err := f.s.RestorePage(ctx, b.ID); err != nil {
+			t.Errorf("restore on a cycle: %v", err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("recursive queries hung on a cycle")
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("queries must finish well inside the deadline: %v", ctx.Err())
+	}
+}

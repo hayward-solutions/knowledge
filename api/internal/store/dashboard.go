@@ -33,23 +33,51 @@ const (
 	dashboardStarsLimit  = 20
 )
 
-const dashboardBase = `SELECT p.id, p.title, p.slug, p.parent_id, p.position, p.status,
-		EXISTS (SELECT 1 FROM pages c WHERE c.parent_id = p.id AND c.status <> 'trashed'),
-		s.key, s.name, %s, p.updated_by
-	FROM pages p
-	JOIN spaces s ON s.id = p.space_id AND s.deleted_at IS NULL
-	JOIN users me ON me.id = $1
-	LEFT JOIN space_members m ON m.space_id = s.id AND m.user_id = $1
-	%s
-	WHERE (me.is_system_admin OR m.user_id IS NOT NULL OR s.visibility = 'internal')
-	  AND p.status <> 'trashed'
-	  AND (p.status <> 'draft' OR p.created_by = $1 OR me.is_system_admin OR m.role = 'admin')
-	  AND %s
-	ORDER BY %s
-	LIMIT %d`
+const dashboardQueryTemplate = `WITH acc AS (
+		SELECT s.id, s.key, s.name, (me.is_system_admin OR m.role = 'admin') AS is_admin
+		FROM spaces s
+		JOIN users me ON me.id = $1
+		LEFT JOIN space_members m ON m.space_id = s.id AND m.user_id = $1
+		WHERE s.deleted_at IS NULL
+		  AND (me.is_system_admin OR m.user_id IS NOT NULL OR s.visibility = 'internal')
+	),
+	%[1]stop AS (
+		SELECT p.id, p.title, p.slug, p.parent_id, p.position, p.status,
+		       acc.key AS space_key, acc.name AS space_name, %[2]s AS ts, p.updated_by, %[3]s AS ord
+		FROM %[4]s
+		WHERE p.status <> 'trashed'
+		  AND (p.status <> 'draft' OR p.created_by = $1 OR acc.is_admin)
+		  AND %[5]s
+		ORDER BY %[3]s DESC, p.id DESC
+		LIMIT %[6]d
+	)
+	SELECT t.id, t.title, t.slug, t.parent_id, t.position, t.status,
+	       EXISTS (SELECT 1 FROM pages c WHERE c.parent_id = t.id AND c.status <> 'trashed'),
+	       t.space_key, t.space_name, t.ts, t.updated_by
+	FROM top t
+	ORDER BY t.ord DESC, t.id DESC`
 
-func dashboardQuery(tsExpr, join, where, order string, limit int) string {
-	return fmt.Sprintf(dashboardBase, tsExpr, join, where, order, limit)
+const dashboardDraftCandidates = `cand AS (
+		SELECT p.id, COALESCE(pd.updated_at, p.updated_at) AS ts
+		FROM pages p
+		LEFT JOIN page_drafts pd ON pd.page_id = p.id AND pd.user_id = $1
+		WHERE p.status = 'draft' AND p.created_by = $1
+		UNION
+		SELECT pd.page_id, pd.updated_at
+		FROM page_drafts pd
+		JOIN pages p ON p.id = pd.page_id
+		WHERE pd.user_id = $1 AND p.status <> 'trashed'
+	),
+	`
+
+func dashboardQuery(tsExpr, ordExpr, join, where string, limit int) string {
+	return fmt.Sprintf(dashboardQueryTemplate, "", tsExpr, ordExpr,
+		"pages p JOIN acc ON acc.id = p.space_id "+join, where, limit)
+}
+
+func dashboardDraftsQuery(limit int) string {
+	return fmt.Sprintf(dashboardQueryTemplate, dashboardDraftCandidates, "cand.ts", "cand.ts",
+		"cand JOIN pages p ON p.id = cand.id JOIN acc ON acc.id = p.space_id", "TRUE", limit)
 }
 
 func (s *Store) dashboardSection(ctx context.Context, sql string, userID uuid.UUID) ([]DashboardPage, error) {
@@ -77,27 +105,23 @@ func (s *Store) GetDashboard(ctx context.Context, userID uuid.UUID) (Dashboard, 
 	var d Dashboard
 	var err error
 	d.RecentUpdates, err = s.dashboardSection(ctx, dashboardQuery(
-		"p.updated_at", "", "p.status = 'published'", "p.updated_at DESC, p.id DESC", dashboardRecentLimit), userID)
+		"p.updated_at", "p.updated_at", "", "p.status = 'published'", dashboardRecentLimit), userID)
 	if err != nil {
 		return d, err
 	}
 	d.RecentlyViewed, err = s.dashboardSection(ctx, dashboardQuery(
-		"p.updated_at", "JOIN page_views v ON v.page_id = p.id AND v.user_id = $1", "TRUE",
-		"v.viewed_at DESC, p.id DESC", dashboardViewedLimit), userID)
+		"p.updated_at", "v.viewed_at", "JOIN page_views v ON v.page_id = p.id AND v.user_id = $1", "TRUE",
+		dashboardViewedLimit), userID)
 	if err != nil {
 		return d, err
 	}
-	d.MyDrafts, err = s.dashboardSection(ctx, dashboardQuery(
-		"COALESCE(pd.updated_at, p.updated_at)",
-		"LEFT JOIN page_drafts pd ON pd.page_id = p.id AND pd.user_id = $1",
-		"((p.status = 'draft' AND p.created_by = $1) OR pd.user_id IS NOT NULL)",
-		"COALESCE(pd.updated_at, p.updated_at) DESC, p.id DESC", dashboardDraftsLimit), userID)
+	d.MyDrafts, err = s.dashboardSection(ctx, dashboardDraftsQuery(dashboardDraftsLimit), userID)
 	if err != nil {
 		return d, err
 	}
 	d.Starred, err = s.dashboardSection(ctx, dashboardQuery(
-		"p.updated_at", "JOIN page_stars st ON st.page_id = p.id AND st.user_id = $1", "TRUE",
-		"st.created_at DESC, p.id DESC", dashboardStarsLimit), userID)
+		"p.updated_at", "st.created_at", "JOIN page_stars st ON st.page_id = p.id AND st.user_id = $1", "TRUE",
+		dashboardStarsLimit), userID)
 	if err != nil {
 		return d, err
 	}

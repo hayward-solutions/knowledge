@@ -19,6 +19,7 @@ import (
 const (
 	commentMaxQuoteRunes = 2000
 	commentMaxReplyDepth = 2
+	commentMaxContext    = 64
 )
 
 type CommentHandler struct {
@@ -57,6 +58,8 @@ type commentCreateInput struct {
 	ParentID     *uuid.UUID `json:"parent_id"`
 	InlineAnchor *struct {
 		QuotedText string `json:"quoted_text"`
+		Prefix     string `json:"prefix"`
+		Suffix     string `json:"suffix"`
 	} `json:"inline_anchor"`
 }
 
@@ -163,7 +166,20 @@ func (h *CommentHandler) Create(w http.ResponseWriter, r *http.Request) {
 			httpErr(w, http.StatusBadRequest, "invalid inline anchor")
 			return
 		}
-		anchor, _ = json.Marshal(map[string]string{"quoted_text": quoted})
+		prefix := strings.TrimSpace(in.InlineAnchor.Prefix)
+		suffix := strings.TrimSpace(in.InlineAnchor.Suffix)
+		if utf8.RuneCountInString(prefix) > commentMaxContext || utf8.RuneCountInString(suffix) > commentMaxContext {
+			httpErr(w, http.StatusBadRequest, "invalid inline anchor")
+			return
+		}
+		stored := map[string]string{"quoted_text": quoted}
+		if prefix != "" {
+			stored["prefix"] = prefix
+		}
+		if suffix != "" {
+			stored["suffix"] = suffix
+		}
+		anchor, _ = json.Marshal(stored)
 	}
 	if in.ParentID != nil {
 		parent, err := h.Store.GetComment(r.Context(), *in.ParentID)

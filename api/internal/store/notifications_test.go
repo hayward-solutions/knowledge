@@ -117,9 +117,14 @@ func TestNotificationsSurvivePagePurge(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].PageTitle == nil || *list[0].PageTitle != "P" {
 		t.Fatalf("notifications after purge: %+v %v", list, err)
 	}
-	acts, err := s.ListSpaceActivity(ctx, space, me.ID, false, nil, 10)
-	if err != nil || len(acts) != 1 || acts[0].PageTitle == nil || *acts[0].PageTitle != "P" {
-		t.Fatalf("activity after purge: %+v %v", acts, err)
+	acts, err := s.ListSpaceActivity(ctx, space, me.ID, domain.RoleViewer, nil, 10)
+	if err != nil || len(acts) != 0 {
+		t.Fatalf("activity of a purged page must be hidden: %+v %v", acts, err)
+	}
+	var rows int
+	_ = s.Pool.QueryRow(ctx, `SELECT count(*) FROM activity`).Scan(&rows)
+	if rows != 1 {
+		t.Fatalf("activity row should survive purge: %d", rows)
 	}
 }
 
@@ -146,5 +151,55 @@ func TestNotifyMigrationCascades(t *testing.T) {
 	_ = s.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM watches) + (SELECT count(*) FROM notifications)`).Scan(&n)
 	if n != 0 {
 		t.Fatalf("watches and notifications should cascade with the user: %d", n)
+	}
+}
+
+func TestPerfIndexesExist(t *testing.T) {
+	s := testutil.NewDB(t)
+	for _, name := range []string{"idx_page_views_page", "idx_pages_recent", "idx_pages_draft_owner", "idx_notifications_user_created"} {
+		var n int
+		if err := s.Pool.QueryRow(context.Background(), `SELECT count(*) FROM pg_indexes WHERE indexname = $1`, name).Scan(&n); err != nil || n != 1 {
+			t.Fatalf("index %s: %d %v", name, n, err)
+		}
+	}
+}
+
+func TestRecursiveQueriesTerminateOnCycles(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	s := testutil.NewDB(t)
+	u := testutil.CreateUser(t, s, "u@example.test", "", false)
+	space := testutil.CreateSpace(t, s, testutil.SpaceOpts{Key: "ENG", CreatedBy: u.ID})
+	a := testutil.CreatePage(t, s, space, u.ID, "a")
+	b := testutil.CreatePage(t, s, space, u.ID, "b")
+	if _, err := s.Pool.Exec(ctx, `UPDATE pages SET parent_id = $2 WHERE id = $1`, a, b); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Pool.Exec(ctx, `UPDATE pages SET parent_id = $2 WHERE id = $1`, b, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetWatch(ctx, u.ID, domain.WatchTargetPage, b); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ListPublishWatcherIDs(ctx, a, space)
+	if err != nil || len(got) != 1 || got[0] != u.ID {
+		t.Fatalf("ancestor watchers on a cycle: %v %v", got, err)
+	}
+
+	c1 := uuid.Must(uuid.NewV7())
+	c2 := uuid.Must(uuid.NewV7())
+	for _, id := range []uuid.UUID{c1, c2} {
+		if _, err := s.Pool.Exec(ctx, `INSERT INTO comments (id, page_id, author_id) VALUES ($1, $2, $3)`, id, a, u.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Pool.Exec(ctx, `UPDATE comments SET parent_id = $2 WHERE id = $1`, c1, c2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Pool.Exec(ctx, `UPDATE comments SET parent_id = $2 WHERE id = $1`, c2, c1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ListCommentThreadAuthorIDs(ctx, c1); err != nil {
+		t.Fatalf("thread authors on a cycle: %v", err)
 	}
 }

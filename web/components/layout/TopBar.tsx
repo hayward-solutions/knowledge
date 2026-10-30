@@ -11,6 +11,7 @@ import { useTheme } from "@/lib/theme";
 import { Avatar } from "@/components/ui/Avatar";
 import { Menu, MenuDivider, MenuItem } from "@/components/ui/Dropdown";
 import { useToast } from "@/components/ui/Toast";
+import { SIDEBAR_ID } from "@/components/layout/Sidebar";
 import { QuickSearch } from "@/components/search/QuickSearch";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 import { NewPageDialog } from "@/components/pages/NewPageDialog";
@@ -22,9 +23,11 @@ const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "dev";
 export function TopBar({
   children,
   onMenuClick,
+  menuOpen = false,
 }: {
   children?: React.ReactNode;
   onMenuClick?: () => void;
+  menuOpen?: boolean;
 }) {
   const router = useRouter();
   const qc = useQueryClient();
@@ -55,6 +58,8 @@ export function TopBar({
           type="button"
           onClick={onMenuClick}
           aria-label="Open navigation"
+          aria-expanded={menuOpen}
+          aria-controls={SIDEBAR_ID}
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-ink-700 hover:bg-ink-100 md:hidden"
         >
           <MenuIcon size={20} />

@@ -2,6 +2,7 @@ package content
 
 import (
 	"bytes"
+	"errors"
 	"html"
 	"path"
 	"regexp"
@@ -35,6 +36,13 @@ var (
 		atom.H1: true, atom.H2: true, atom.H3: true, atom.H4: true, atom.H5: true, atom.H6: true,
 	}
 )
+
+const (
+	MarkdownMaxLines   = 20000
+	MarkdownMaxNesting = 32
+)
+
+var ErrMarkdownTooComplex = errors.New("markdown too complex")
 
 type mdDetailsRenderer struct{}
 
@@ -340,4 +348,80 @@ func mdWrapInline(parent *xhtml.Node) {
 		run = append(run, c)
 	}
 	flush()
+}
+
+func mdListMarkerLen(line string) int {
+	if line == "" {
+		return 0
+	}
+	switch line[0] {
+	case '-', '*', '+':
+		if len(line) == 1 || line[1] == ' ' || line[1] == '\t' {
+			return 1
+		}
+		return 0
+	}
+	i := 0
+	for i < len(line) && i < 9 && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i == 0 || i >= len(line) || (line[i] != '.' && line[i] != ')') {
+		return 0
+	}
+	if i+1 == len(line) || line[i+1] == ' ' || line[i+1] == '\t' {
+		return i + 1
+	}
+	return 0
+}
+
+func mdLineNesting(line string) int {
+	depth, indent, i := 0, 0, 0
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		if line[i] == '\t' {
+			indent += 4
+		} else {
+			indent++
+		}
+		i++
+	}
+	started := false
+	for i < len(line) {
+		switch c := line[i]; {
+		case c == '>':
+			depth++
+			i++
+			started = true
+		case c == ' ' || c == '\t':
+			i++
+		default:
+			n := mdListMarkerLen(line[i:])
+			if n == 0 {
+				return depth
+			}
+			if !started {
+				depth += indent / 2
+			}
+			started = true
+			depth++
+			i += n
+		}
+		if depth > MarkdownMaxNesting {
+			return depth
+		}
+	}
+	return depth
+}
+
+func CheckMarkdownComplexity(md string) error {
+	if strings.Count(md, "\n") >= MarkdownMaxLines {
+		return ErrMarkdownTooComplex
+	}
+	for len(md) > 0 {
+		var line string
+		line, md, _ = strings.Cut(md, "\n")
+		if mdLineNesting(line) > MarkdownMaxNesting {
+			return ErrMarkdownTooComplex
+		}
+	}
+	return nil
 }

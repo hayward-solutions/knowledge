@@ -193,17 +193,31 @@ func (s *Store) GetPublishMessage(ctx context.Context, pageID uuid.UUID, version
 
 func (s *Store) ListCommentThreadAuthorIDs(ctx context.Context, commentID uuid.UUID) ([]uuid.UUID, error) {
 	return s.watcherIDs(ctx,
-		`WITH RECURSIVE up(id, parent_id) AS (
-			SELECT id, parent_id FROM comments WHERE id = $1
-			UNION ALL
-			SELECT c.id, c.parent_id FROM comments c JOIN up ON c.id = up.parent_id
+		`WITH RECURSIVE up(id, depth) AS (
+			SELECT id, 0 FROM comments WHERE id = $1
+			UNION
+			SELECT c.parent_id, up.depth + 1 FROM comments c JOIN up ON c.id = up.id
+			WHERE c.parent_id IS NOT NULL AND up.depth < 1000
 		),
-		down(id) AS (
-			SELECT id FROM up WHERE parent_id IS NULL
-			UNION ALL
-			SELECT c.id FROM comments c JOIN down ON c.parent_id = down.id
+		root AS (
+			SELECT up.id FROM up JOIN comments c ON c.id = up.id WHERE c.parent_id IS NULL
+		),
+		down(id, depth) AS (
+			SELECT id, 0 FROM root
+			UNION
+			SELECT c.id, down.depth + 1 FROM comments c JOIN down ON c.parent_id = down.id WHERE down.depth < 1000
 		)
 		SELECT DISTINCT c.author_id FROM comments c JOIN down ON c.id = down.id
 		WHERE c.deleted_at IS NULL
 		ORDER BY c.author_id`, commentID)
+}
+
+func (s *Store) ListUnreadPageMentionUserIDs(ctx context.Context, pageID uuid.UUID, userIDs []uuid.UUID) ([]uuid.UUID, error) {
+	if len(userIDs) == 0 {
+		return []uuid.UUID{}, nil
+	}
+	return s.watcherIDs(ctx,
+		`SELECT DISTINCT user_id FROM notifications
+		 WHERE type = 'page.mentioned' AND page_id = $1 AND read_at IS NULL AND user_id = ANY($2::uuid[])
+		 ORDER BY user_id`, pageID, userIDs)
 }

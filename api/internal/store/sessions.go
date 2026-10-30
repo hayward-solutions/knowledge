@@ -64,6 +64,11 @@ func (s *Store) DeleteUserSessions(ctx context.Context, userID uuid.UUID) error 
 	return err
 }
 
+func (s *Store) DeleteOtherUserSessions(ctx context.Context, userID uuid.UUID, keepToken string) error {
+	_, err := s.Pool.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1 AND id <> $2`, userID, HashSessionToken(keepToken))
+	return err
+}
+
 func (s *Store) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 	tag, err := s.Pool.Exec(ctx, `DELETE FROM sessions WHERE expires_at <= now()`)
 	if err != nil {

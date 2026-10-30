@@ -87,3 +87,28 @@ export function removeCommentFromContent(
     editor.destroy();
   }
 }
+
+export interface SelectionContext {
+  quoted_text: string;
+  prefix: string;
+  suffix: string;
+}
+
+const CONTEXT_CHARS = 32;
+
+export function getSelectionContext(
+  editor: Editor,
+  range: { from: number; to: number }
+): SelectionContext {
+  const doc = editor.state.doc;
+  const size = doc.content.size;
+  const from = Math.max(0, Math.min(range.from, size));
+  const to = Math.max(from, Math.min(range.to, size));
+  const before = doc.textBetween(Math.max(0, from - CONTEXT_CHARS * 2), from, " ", " ");
+  const after = doc.textBetween(to, Math.min(size, to + CONTEXT_CHARS * 2), " ", " ");
+  return {
+    quoted_text: doc.textBetween(from, to, " ", " "),
+    prefix: before.slice(-CONTEXT_CHARS),
+    suffix: after.slice(0, CONTEXT_CHARS),
+  };
+}

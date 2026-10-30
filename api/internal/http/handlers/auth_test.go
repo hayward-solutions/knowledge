@@ -2,6 +2,8 @@ package handlers_test
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -106,7 +108,7 @@ func TestLoginRejectsDisabledAndPasswordlessUsers(t *testing.T) {
 		t.Fatalf("disabled + wrong password must not reveal state: %s", r.raw)
 	}
 
-	if _, err := e.store.UpsertOIDCUser(context.Background(), "https://issuer.test", "sub-1", "sso@example.test", "SSO", nil); err != nil {
+	if _, err := e.store.UpsertOIDCUser(context.Background(), "https://issuer.test", "sub-1", "sso@example.test", "SSO", nil, true); err != nil {
 		t.Fatal(err)
 	}
 	if r := c.login("sso@example.test", testutil.DefaultPassword); r.status != 401 {
@@ -178,12 +180,128 @@ func TestLoginRateLimit(t *testing.T) {
 	c := e.client()
 	last := 0
 	for i := 0; i < 11; i++ {
-		last = c.login("nobody@example.test", "Wrong-Password-1!").status
+		last = c.login(fmt.Sprintf("nobody%d@example.test", i), "Wrong-Password-1!").status
 		if i < 10 && last != 401 {
 			t.Fatalf("attempt %d: %d", i, last)
 		}
 	}
 	if last != 429 {
 		t.Fatalf("11th attempt: %d, want 429", last)
+	}
+}
+
+func TestLoginRateLimitCannotBeBypassedWithForwardedHeaders(t *testing.T) {
+	e := newEnv(t, func(c *config.Config) { c.TrustedProxies = nil })
+	counts := map[int]int{}
+	for i := 0; i < 40; i++ {
+		req, _ := http.NewRequest("POST", e.server.URL+"/api/v1/auth/login",
+			strings.NewReader(fmt.Sprintf(`{"email":"nobody%d@example.test","password":"Wrong-Password-1!"}`, i)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("198.51.100.%d", i+1))
+		req.Header.Set("X-Real-IP", fmt.Sprintf("203.0.113.%d", i+1))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		counts[resp.StatusCode]++
+	}
+	if counts[401] != 10 || counts[429] != 30 {
+		t.Fatalf("spoofed headers must not reset the limit: %v", counts)
+	}
+}
+
+func TestLoginRateLimitHonoursTrustedProxyHeaders(t *testing.T) {
+	e := newEnv(t, nil)
+	counts := map[int]int{}
+	for i := 0; i < 15; i++ {
+		req, _ := http.NewRequest("POST", e.server.URL+"/api/v1/auth/login",
+			strings.NewReader(fmt.Sprintf(`{"email":"nobody%d@example.test","password":"Wrong-Password-1!"}`, i)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", "198.51.100.77")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		counts[resp.StatusCode]++
+	}
+	if counts[401] != 10 || counts[429] != 5 {
+		t.Fatalf("one forwarded client must share a bucket: %v", counts)
+	}
+}
+
+func TestLoginRateLimitPerEmail(t *testing.T) {
+	e := newEnv(t, nil)
+	testutil.CreateUser(t, e.store, "target@example.test", "", false)
+	codes := []int{}
+	for i := 0; i < 7; i++ {
+		codes = append(codes, e.client().login("Target@Example.test", "Wrong-Password-1!").status)
+	}
+	for i, c := range codes {
+		want := 401
+		if i >= 5 {
+			want = 429
+		}
+		if c != want {
+			t.Fatalf("attempt %d from a fresh ip: %d, want %d (all: %v)", i, c, want, codes)
+		}
+	}
+	if r := e.client().login("target@example.test", testutil.DefaultPassword); r.status != 429 {
+		t.Fatalf("correct password must also be throttled once the email bucket is empty: %d", r.status)
+	}
+	if r := e.client().login("someone-else@example.test", "Wrong-Password-1!"); r.status != 401 {
+		t.Fatalf("other emails unaffected: %d", r.status)
+	}
+}
+
+func TestChangePasswordRateLimitPerEmail(t *testing.T) {
+	e := newEnv(t, nil)
+	testutil.CreateUser(t, e.store, "cp@example.test", "", false)
+	c := e.client()
+	c.mustLogin("cp@example.test", testutil.DefaultPassword)
+	body := map[string]string{"current_password": "Wrong-Password-1!", "new_password": "Brand-New-Passw0rd!"}
+	var codes []int
+	for i := 0; i < 6; i++ {
+		codes = append(codes, c.do("POST", "/api/v1/auth/change-password", body).status)
+	}
+	if codes[0] != 401 || codes[3] != 401 || codes[4] != 429 || codes[5] != 429 {
+		t.Fatalf("codes = %v", codes)
+	}
+}
+
+func TestChangePasswordRevokesOtherSessionsOnly(t *testing.T) {
+	e := newEnv(t, nil)
+	testutil.CreateUser(t, e.store, "rev@example.test", "", false)
+	current, other, third := e.client(), e.client(), e.client()
+	current.mustLogin("rev@example.test", testutil.DefaultPassword)
+	other.mustLogin("rev@example.test", testutil.DefaultPassword)
+	third.mustLogin("rev@example.test", testutil.DefaultPassword)
+
+	bystander := testutil.CreateUser(t, e.store, "bystander@example.test", "", false)
+	bc := e.client()
+	bc.mustLogin(bystander.Email, testutil.DefaultPassword)
+
+	r := current.do("POST", "/api/v1/auth/change-password", map[string]string{
+		"current_password": testutil.DefaultPassword, "new_password": "Brand-New-Passw0rd!",
+	})
+	if r.status != 204 {
+		t.Fatalf("change: %d %s", r.status, r.raw)
+	}
+	if r := current.do("GET", "/api/v1/auth/me", nil); r.status != 200 {
+		t.Fatalf("current session must survive: %d", r.status)
+	}
+	for name, c := range map[string]*client{"other": other, "third": third} {
+		if r := c.do("GET", "/api/v1/auth/me", nil); r.status != 401 {
+			t.Fatalf("%s session must be revoked: %d", name, r.status)
+		}
+	}
+	if r := bc.do("GET", "/api/v1/auth/me", nil); r.status != 200 {
+		t.Fatalf("other users keep their sessions: %d", r.status)
+	}
+	var n int
+	_ = e.store.Pool.QueryRow(context.Background(), `SELECT count(*) FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.email = 'rev@example.test'`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("remaining sessions = %d, want 1", n)
 	}
 }

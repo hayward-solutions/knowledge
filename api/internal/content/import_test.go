@@ -150,3 +150,25 @@ func TestMarkdownRoundTrip(t *testing.T) {
 		t.Fatalf("custom round trip:\n%s", out)
 	}
 }
+
+func TestCheckMarkdownComplexity(t *testing.T) {
+	ok := []string{
+		"", "plain\n\ntext", "> quote\n> more", "- a\n  - b\n    - c", strings.Repeat("a\n", 19000),
+		"```\n" + strings.Repeat("    >>>>> x\n", 50) + "```", strings.Repeat("> ", 10) + "x", "1. a\n   1. b",
+	}
+	for i, md := range ok {
+		if err := CheckMarkdownComplexity(md); err != nil {
+			t.Fatalf("case %d rejected: %v", i, err)
+		}
+	}
+	bad := []string{
+		strings.Repeat(">", 200), strings.Repeat("> ", 33) + "x", strings.Repeat("- ", 33) + "x",
+		strings.Repeat("a\n", 20001), "x\n" + strings.Repeat("1. ", 40) + "y",
+		strings.Repeat(" ", 80) + "- deep",
+	}
+	for i, md := range bad {
+		if err := CheckMarkdownComplexity(md); err == nil {
+			t.Fatalf("case %d accepted", i)
+		}
+	}
+}

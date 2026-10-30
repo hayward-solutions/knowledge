@@ -107,3 +107,9 @@ ok  	github.com/hayward-solutions/knowledge/api/internal/storage	0.134s
 ok  	github.com/hayward-solutions/knowledge/api/internal/store	7.429s
 ?   	github.com/hayward-solutions/knowledge/api/internal/testutil	[no test files]
 ```
+
+## Remediation round 2: cycle-safe subtree walk
+
+`ListAttachmentObjectKeysUnderPage` now walks `tree(id, depth)` with `UNION` (not `UNION ALL`) and `WHERE t.depth < 1000`, then selects keys with `a.page_id IN (SELECT id FROM tree)`. Because the depth column is part of the row, a parent cycle is not deduplicated by `UNION` alone; the depth guard is what bounds it (at most 1000 iterations), and the `IN` subquery collapses duplicate page ids so each key is returned once. New test `TestListAttachmentObjectKeysUnderPageSurvivesCycle` builds an A <-> B parent cycle with raw SQL, runs under a 10 s context, and asserts both keys come back once and promptly.
+
+Gate: all attachment tests, store tests and every package of mine pass. Other agents' in-progress work was failing at the time of the last full run (`TestImportHardLimits` in the export work; earlier a transient run had OIDC callback tests and a gofmt complaint in `store_test.go` that cleared on retry); none touch attachment code.

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { ApiError, getMe, type User } from "@/lib/api";
+import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { ApiError, UNAUTHENTICATED_EVENT, getMe, type User } from "@/lib/api";
+import { safeNext } from "@/lib/safe-next";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Spinner } from "@/components/ui/Spinner";
@@ -19,12 +20,9 @@ export function useMe(): UseQueryResult<User, Error> {
   });
 }
 
-export function safeNext(raw: string | null | undefined, fallback = "/"): string {
-  if (!raw) return fallback;
-  if (!raw.startsWith("/")) return fallback;
-  if (raw.startsWith("//") || raw.startsWith("/\\")) return fallback;
-  return raw;
-}
+export { safeNext };
+
+const AuthGuardContext = createContext(false);
 
 function FullScreenSpinner() {
   return (
@@ -35,18 +33,40 @@ function FullScreenSpinner() {
 }
 
 export function RequireAuth({ children }: { children: ReactNode }) {
+  const guarded = useContext(AuthGuardContext);
+  if (guarded) return <>{children}</>;
+  return <AuthGuard>{children}</AuthGuard>;
+}
+
+function AuthGuard({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
+  const qc = useQueryClient();
   const { data, error, isPending, refetch } = useMe();
+  const [expired, setExpired] = useState(false);
+  const handled = useRef(false);
   const unauthenticated = error instanceof ApiError && error.status === 401;
+  const redirecting = expired || unauthenticated;
 
   useEffect(() => {
-    if (!unauthenticated) return;
-    const here = `${pathname}${window.location.search}`;
-    router.replace(`/login?next=${encodeURIComponent(safeNext(here))}`);
-  }, [unauthenticated, pathname, router]);
+    const onUnauthenticated = () => {
+      if (handled.current) return;
+      handled.current = true;
+      setExpired(true);
+    };
+    window.addEventListener(UNAUTHENTICATED_EVENT, onUnauthenticated);
+    return () => window.removeEventListener(UNAUTHENTICATED_EVENT, onUnauthenticated);
+  }, []);
 
-  if (isPending || unauthenticated) return <FullScreenSpinner />;
+  useEffect(() => {
+    if (!redirecting) return;
+    handled.current = true;
+    const here = `${pathname}${window.location.search}`;
+    qc.clear();
+    router.replace(`/login?next=${encodeURIComponent(safeNext(here))}`);
+  }, [redirecting, pathname, router, qc]);
+
+  if (redirecting || isPending) return <FullScreenSpinner />;
 
   if (error || !data) {
     return (
@@ -64,7 +84,7 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     );
   }
 
-  return <>{children}</>;
+  return <AuthGuardContext.Provider value>{children}</AuthGuardContext.Provider>;
 }
 
 export function RequireAdmin({ children }: { children: ReactNode }) {

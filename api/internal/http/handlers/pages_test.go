@@ -1142,3 +1142,125 @@ func TestPagesRejectOversizedVersionNumbers(t *testing.T) {
 		t.Fatalf("version path: %d %s", r.status, r.raw)
 	}
 }
+
+func TestPagesHomeCannotBeMovedOrTrashedViaAncestor(t *testing.T) {
+	w := pagesSetup(t)
+	section := w.createPublished("ed1", "Section", nil)
+	if r := w.as("ed1").do("POST", pagesPath(w.home.String(), "/move"), map[string]any{"parent_id": pagesID(section)}); r.status != 400 {
+		t.Fatalf("move home: %d %s", r.status, r.raw)
+	}
+	if r := w.as("ed1").do("POST", pagesPath(w.home.String(), "/move"), map[string]any{"parent_id": nil, "position": 0}); r.status != 400 {
+		t.Fatalf("reorder home: %d %s", r.status, r.raw)
+	}
+	if _, err := w.store.Pool.Exec(context.Background(), `UPDATE pages SET parent_id = $2 WHERE id = $1`, w.home, pagesID(section)); err != nil {
+		t.Fatal(err)
+	}
+	if r := w.as("ed1").do("POST", pagesPath(pagesID(section), "/trash"), nil); r.status != 400 {
+		t.Fatalf("trash ancestor of home: %d %s", r.status, r.raw)
+	}
+	if got := w.as("ed1").do("GET", pagesPath(w.home.String()), nil).body["status"]; got != "published" {
+		t.Fatalf("home status: %v", got)
+	}
+}
+
+func TestPagesPublishEventOnlyCarriesNewMentions(t *testing.T) {
+	w := pagesSetup(t)
+	id := pagesID(w.create("ed1", "Mentions", nil))
+	ed2, viewer := w.users["ed2"].ID, w.users["viewer"].ID
+	doc := func(ids ...uuid.UUID) map[string]any {
+		nodes := []any{}
+		for _, m := range ids {
+			nodes = append(nodes, map[string]any{"type": "mention", "attrs": map[string]any{"id": m.String(), "label": "x"}})
+		}
+		return map[string]any{"type": "doc", "content": []any{map[string]any{"type": "paragraph", "content": nodes}}}
+	}
+	publish := func(base int, d map[string]any) {
+		t.Helper()
+		r := w.as("ed1").do("POST", pagesPath(id, "/publish"), map[string]any{
+			"title": "Mentions", "content_json": d, "content_html": "", "base_version": base,
+		})
+		if r.status != 200 {
+			t.Fatalf("publish v%d: %d %s", base+1, r.status, r.raw)
+		}
+	}
+	mentionsOf := func(version int) []uuid.UUID {
+		t.Helper()
+		w.bus.Wait()
+		for _, e := range w.events.all() {
+			if ev, ok := e.(domain.PagePublished); ok && ev.PageID.String() == id && ev.Version == version {
+				return ev.MentionedUserIDs
+			}
+		}
+		t.Fatalf("no PagePublished for version %d", version)
+		return nil
+	}
+
+	publish(0, doc(ed2))
+	if got := mentionsOf(1); len(got) != 1 || got[0] != ed2 {
+		t.Fatalf("first publish mentions everyone: %v", got)
+	}
+	publish(1, doc(ed2))
+	if got := mentionsOf(2); len(got) != 0 {
+		t.Fatalf("unchanged content must carry no mentions: %v", got)
+	}
+	publish(2, doc(ed2, viewer))
+	if got := mentionsOf(3); len(got) != 1 || got[0] != viewer {
+		t.Fatalf("only the added mention: %v", got)
+	}
+
+	r := w.as("ed1").do("POST", pagesPath(id, "/versions/3/restore"), nil)
+	if r.status != 200 {
+		t.Fatalf("restore: %d", r.status)
+	}
+	if got := mentionsOf(4); len(got) != 0 {
+		t.Fatalf("restoring identical content has no new mentions: %v", got)
+	}
+	r = w.as("ed1").do("POST", pagesPath(id, "/versions/1/restore"), nil)
+	if r.status != 200 {
+		t.Fatalf("restore v1: %d", r.status)
+	}
+	if got := mentionsOf(5); len(got) != 0 {
+		t.Fatalf("restoring an older version drops a mention, adds none: %v", got)
+	}
+	r = w.as("ed1").do("POST", pagesPath(id, "/versions/3/restore"), nil)
+	if r.status != 200 {
+		t.Fatalf("restore v3: %d", r.status)
+	}
+	if got := mentionsOf(6); len(got) != 1 || got[0] != viewer {
+		t.Fatalf("restoring a version that re-adds a mention: %v", got)
+	}
+}
+
+func TestPagesTreeDepthLimit(t *testing.T) {
+	w := pagesSetup(t)
+	ctx := context.Background()
+	var chain []uuid.UUID
+	var parent *uuid.UUID
+	for i := 0; i < 65; i++ {
+		p, err := w.store.CreatePage(ctx, store.NewPage{SpaceID: w.space, ParentID: parent, Title: "L", CreatedBy: w.users["ed1"].ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		chain = append(chain, p.ID)
+		parent = &chain[len(chain)-1]
+	}
+	deepest := chain[64].String()
+
+	r := w.as("ed1").do("POST", "/api/v1/spaces/ENG/pages", map[string]any{"title": "x", "parent_id": deepest})
+	if r.status != 400 || r.body["error"] != "page tree too deep" {
+		t.Fatalf("create: %d %s", r.status, r.raw)
+	}
+	r = w.as("ed1").do("POST", pagesPath(chain[0].String(), "/copy"), map[string]any{"parent_id": deepest})
+	if r.status != 400 || r.body["error"] != "page tree too deep" {
+		t.Fatalf("copy: %d %s", r.status, r.raw)
+	}
+	loose := w.create("ed1", "Loose", nil)
+	r = w.as("ed1").do("POST", pagesPath(pagesID(loose), "/move"), map[string]any{"parent_id": deepest})
+	if r.status != 400 || r.body["error"] != "page tree too deep" {
+		t.Fatalf("move: %d %s", r.status, r.raw)
+	}
+	r = w.as("ed1").do("POST", pagesPath(pagesID(loose), "/move"), map[string]any{"parent_id": chain[63].String()})
+	if r.status != 200 {
+		t.Fatalf("move at the limit: %d %s", r.status, r.raw)
+	}
+}

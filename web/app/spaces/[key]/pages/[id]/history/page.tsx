@@ -27,7 +27,7 @@ import { RelativeTime } from "@/components/pages/RelativeTime";
 import { ListSkeleton } from "@/components/pages/Skeletons";
 import { VersionDiff } from "@/components/pages/VersionDiff";
 import { PageBreadcrumbs } from "@/components/pages/Breadcrumbs";
-import { errorMessage, htmlToText, pageHref } from "@/components/pages/utils";
+import { errorMessage, pageHref } from "@/components/pages/utils";
 import { useSpace } from "@/components/spaces/SpaceContext";
 
 type Mode = "changes" | "side" | "view";
@@ -114,15 +114,6 @@ export default function HistoryPage() {
   const olderQuery = useVersionContent(id, mode === "view" ? null : olderNum);
   const newerQuery = useVersionContent(id, mode === "view" ? null : newerNum);
   const viewQuery = useVersionContent(id, mode === "view" ? viewNum : null);
-
-  const oldText = useMemo(
-    () => (olderNum === null ? "" : `${olderQuery.data?.title ?? ""}\n\n${htmlToText(olderQuery.data?.content_html ?? "")}`),
-    [olderNum, olderQuery.data]
-  );
-  const newText = useMemo(
-    () => `${newerQuery.data?.title ?? ""}\n\n${htmlToText(newerQuery.data?.content_html ?? "")}`,
-    [newerQuery.data]
-  );
 
   const restore = useMutation({
     mutationFn: (n: number) => restoreVersion(id, n),
@@ -314,7 +305,12 @@ export default function HistoryPage() {
                   ) : newerQuery.isError || olderQuery.isError ? (
                     <EmptyState title="Could not load these versions" />
                   ) : (
-                    <VersionDiff oldText={oldText} newText={newText} />
+                    <VersionDiff
+                      oldTitle={olderNum === null ? "" : (olderQuery.data?.title ?? "")}
+                      newTitle={newerQuery.data?.title ?? ""}
+                      oldHtml={olderNum === null ? "" : (olderQuery.data?.content_html ?? "")}
+                      newHtml={newerQuery.data?.content_html ?? ""}
+                    />
                   )}
                 </>
               )}

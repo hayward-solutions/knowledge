@@ -61,10 +61,11 @@ func (s *Store) ListPageWatcherIDs(ctx context.Context, pageID uuid.UUID) ([]uui
 
 func (s *Store) ListPublishWatcherIDs(ctx context.Context, pageID, spaceID uuid.UUID) ([]uuid.UUID, error) {
 	return s.watcherIDs(ctx,
-		`WITH RECURSIVE chain(id, parent_id) AS (
-			SELECT id, parent_id FROM pages WHERE id = $1
-			UNION ALL
-			SELECT p.id, p.parent_id FROM pages p JOIN chain ON p.id = chain.parent_id
+		`WITH RECURSIVE chain(id, depth) AS (
+			SELECT id, 0 FROM pages WHERE id = $1
+			UNION
+			SELECT p.parent_id, chain.depth + 1 FROM pages p JOIN chain ON p.id = chain.id
+			WHERE p.parent_id IS NOT NULL AND chain.depth < 1000
 		)
 		SELECT DISTINCT user_id FROM watches
 		WHERE (target_type = 'page' AND target_id IN (SELECT id FROM chain))
@@ -111,10 +112,10 @@ func (s *Store) FilterNotifiable(ctx context.Context, spaceID uuid.UUID, pageID 
 
 func deletePageSubtreeWatches(ctx context.Context, tx pgx.Tx, pageID uuid.UUID) error {
 	_, err := tx.Exec(ctx,
-		`WITH RECURSIVE sub AS (
-		     SELECT id FROM pages WHERE id = $1
-		     UNION ALL
-		     SELECT c.id FROM pages c JOIN sub ON c.parent_id = sub.id
+		`WITH RECURSIVE sub(id, depth) AS (
+		     SELECT id, 0 FROM pages WHERE id = $1
+		     UNION
+		     SELECT c.id, sub.depth + 1 FROM pages c JOIN sub ON c.parent_id = sub.id WHERE sub.depth < 1000
 		 )
 		 DELETE FROM watches WHERE target_type = 'page' AND target_id IN (SELECT id FROM sub)`, pageID)
 	return err

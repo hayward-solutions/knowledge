@@ -3,6 +3,7 @@ package auth
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHashAndVerify(t *testing.T) {
@@ -84,4 +85,39 @@ func TestValidatePassword(t *testing.T) {
 
 func TestDummyVerify(t *testing.T) {
 	DummyVerify("anything")
+}
+
+func TestHashingConcurrencyIsBounded(t *testing.T) {
+	h, err := HashPassword("Correct-Horse-9-Battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap(hashSlots) != 4 {
+		t.Fatalf("cap = %d, want 4", cap(hashSlots))
+	}
+	for i := 0; i < cap(hashSlots); i++ {
+		hashSlots <- struct{}{}
+	}
+	done := make(chan struct{})
+	go func() {
+		_, _ = VerifyPassword("Correct-Horse-9-Battery", h)
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("verify must wait while all hashing slots are taken")
+	case <-time.After(150 * time.Millisecond):
+	}
+	<-hashSlots
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("verify must proceed once a slot is released")
+	}
+	for i := 1; i < cap(hashSlots); i++ {
+		<-hashSlots
+	}
+	if len(hashSlots) != 0 {
+		t.Fatalf("slots leaked: %d", len(hashSlots))
+	}
 }

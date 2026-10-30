@@ -134,7 +134,7 @@ func pageStoreErr(w http.ResponseWriter, r *http.Request, err error, msg string)
 		httpErr(w, http.StatusNotFound, "not found")
 	case errors.Is(err, store.ErrInvalidParent), errors.Is(err, store.ErrPageCycle),
 		errors.Is(err, store.ErrInvalidAnchor), errors.Is(err, store.ErrHomePage),
-		errors.Is(err, store.ErrNotTrashed):
+		errors.Is(err, store.ErrNotTrashed), errors.Is(err, store.ErrTreeTooDeep):
 		httpErr(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, store.ErrPageTrashed):
 		httpErrCode(w, http.StatusConflict, "page_trashed", "page is trashed")
@@ -176,8 +176,22 @@ func pageOthers(editors []domain.UserRef, self uuid.UUID) []domain.UserRef {
 	return out
 }
 
+func pageNewMentions(current, previous json.RawMessage) []uuid.UUID {
+	seen := map[uuid.UUID]bool{}
+	for _, id := range content.MentionedUserIDs(previous) {
+		seen[id] = true
+	}
+	out := []uuid.UUID{}
+	for _, id := range content.MentionedUserIDs(current) {
+		if !seen[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func pagePublishNow(ctx context.Context, d Deps, actor *domain.User, p store.PublishParams) (domain.Page, error) {
-	page, err := d.Store.PublishPage(ctx, p)
+	page, previous, err := d.Store.PublishPageWithPrevious(ctx, p)
 	if err != nil {
 		return page, err
 	}
@@ -186,7 +200,7 @@ func pagePublishNow(ctx context.Context, d Deps, actor *domain.User, p store.Pub
 		SpaceID:          page.SpaceID,
 		ActorID:          actor.ID,
 		Version:          page.Version,
-		MentionedUserIDs: content.MentionedUserIDs(page.ContentJSON),
+		MentionedUserIDs: pageNewMentions(page.ContentJSON, previous),
 	})
 	return page, nil
 }

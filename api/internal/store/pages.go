@@ -17,9 +17,15 @@ var (
 	ErrInvalidParent = errors.New("parent must be a non-trashed page in the same space")
 	ErrPageCycle     = errors.New("a page cannot be moved under itself or one of its descendants")
 	ErrInvalidAnchor = errors.New("after_id must be a sibling under the target parent")
-	ErrHomePage      = errors.New("the space home page cannot be trashed")
+	ErrHomePage      = errors.New("the space home page cannot be trashed or moved")
 	ErrPageTrashed   = errors.New("page is trashed")
 	ErrNotTrashed    = errors.New("page is not trashed")
+	ErrTreeTooDeep   = errors.New("page tree too deep")
+)
+
+const (
+	pageMaxDepth = 64
+	pageMaxWalk  = 1000
 )
 
 type VersionConflictError struct {
@@ -128,26 +134,65 @@ func (s *Store) ListVisibleAncestors(ctx context.Context, id, viewerID uuid.UUID
 
 func (s *Store) listAncestors(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID, role domain.Role) ([]PageSummary, error) {
 	rows, err := s.Pool.Query(ctx,
-		`WITH RECURSIVE anc AS (
-		     SELECT parent_id AS id, 1 AS depth FROM pages WHERE id = $1 AND parent_id IS NOT NULL
-		     UNION ALL
-		     SELECT p.parent_id, a.depth + 1 FROM pages p JOIN anc a ON p.id = a.id
-		     WHERE p.parent_id IS NOT NULL AND a.depth < 1000
+		`WITH RECURSIVE anc(id) AS (
+		     SELECT parent_id FROM pages WHERE id = $1 AND parent_id IS NOT NULL
+		     UNION
+		     SELECT p.parent_id FROM pages p JOIN anc a ON p.id = a.id WHERE p.parent_id IS NOT NULL
 		 )
-		 SELECT `+pageSummaryCols+`
+		 SELECT `+pageSummaryCols+`, p.created_by, p.version, p.published_at
 		 FROM anc JOIN pages p ON p.id = anc.id
-		 WHERE $2::uuid IS NULL OR CASE
-		     WHEN p.status = 'draft' THEN p.created_by = $2 OR $3
-		     WHEN p.status = 'trashed' AND p.version = 0 AND p.published_at IS NULL THEN p.created_by = $2 OR $3
-		     WHEN p.status = 'trashed' THEN $3 OR $4
-		     ELSE true
-		 END
-		 ORDER BY anc.depth DESC`,
-		id, viewerID, role == domain.RoleAdmin, role.AtLeast(domain.RoleEditor))
+		 LIMIT $2`, id, pageMaxWalk)
 	if err != nil {
 		return nil, err
 	}
-	return pageSummaries(rows)
+	defer rows.Close()
+	type ancestor struct {
+		summary PageSummary
+		page    domain.Page
+	}
+	byParent := map[uuid.UUID]ancestor{}
+	var top *ancestor
+	for rows.Next() {
+		var a ancestor
+		var status string
+		if err := rows.Scan(&a.summary.ID, &a.summary.Title, &a.summary.Slug, &a.summary.ParentID, &a.summary.Position,
+			&status, &a.summary.HasChildren, &a.page.CreatedBy, &a.page.Version, &a.page.PublishedAt); err != nil {
+			return nil, err
+		}
+		a.summary.Status = domain.PageStatus(status)
+		a.page.Status = a.summary.Status
+		if a.summary.ParentID == nil {
+			c := a
+			top = &c
+		} else {
+			byParent[*a.summary.ParentID] = a
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	chain := []ancestor{}
+	if top != nil {
+		chain = append(chain, *top)
+		for len(chain) < pageMaxWalk {
+			next, ok := byParent[chain[len(chain)-1].summary.ID]
+			if !ok {
+				break
+			}
+			chain = append(chain, next)
+		}
+	} else {
+		for _, a := range byParent {
+			chain = append(chain, a)
+		}
+	}
+	out := make([]PageSummary, 0, len(chain))
+	for _, a := range chain {
+		if viewerID == nil || IsPageVisible(a.page, *viewerID, role) {
+			out = append(out, a.summary)
+		}
+	}
+	return out, nil
 }
 
 func (s *Store) ListChildren(ctx context.Context, parentID, viewerID uuid.UUID, viewerIsAdmin bool) ([]PageSummary, error) {
@@ -188,6 +233,48 @@ func pageCheckParent(ctx context.Context, tx pgx.Tx, spaceID, parentID uuid.UUID
 		return ErrInvalidParent
 	}
 	return nil
+}
+
+func pageAncestorCount(ctx context.Context, tx pgx.Tx, id uuid.UUID) (int, error) {
+	var n int
+	err := tx.QueryRow(ctx,
+		`WITH RECURSIVE anc(id) AS (
+		     SELECT parent_id FROM pages WHERE id = $1 AND parent_id IS NOT NULL
+		     UNION
+		     SELECT p.parent_id FROM pages p JOIN anc a ON p.id = a.id WHERE p.parent_id IS NOT NULL
+		 )
+		 SELECT count(*) FROM anc`, id).Scan(&n)
+	return n, err
+}
+
+func pageSubtreeFits(ctx context.Context, tx pgx.Tx, id uuid.UUID, newDepth int) error {
+	frontier := []uuid.UUID{id}
+	for level := 1; ; level++ {
+		rows, err := tx.Query(ctx, `SELECT id FROM pages WHERE parent_id = ANY($1::uuid[])`, frontier)
+		if err != nil {
+			return err
+		}
+		next := []uuid.UUID{}
+		for rows.Next() {
+			var child uuid.UUID
+			if err := rows.Scan(&child); err != nil {
+				rows.Close()
+				return err
+			}
+			next = append(next, child)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(next) == 0 {
+			return nil
+		}
+		if newDepth+level > pageMaxDepth {
+			return ErrTreeTooDeep
+		}
+		frontier = next
+	}
 }
 
 func pageNextPosition(ctx context.Context, tx pgx.Tx, spaceID uuid.UUID, parentID *uuid.UUID) (int, error) {
@@ -255,6 +342,13 @@ func (s *Store) CreatePage(ctx context.Context, in NewPage) (domain.Page, error)
 			if err := pageCheckParent(ctx, tx, in.SpaceID, *in.ParentID); err != nil {
 				return err
 			}
+			depth, err := pageAncestorCount(ctx, tx, *in.ParentID)
+			if err != nil {
+				return err
+			}
+			if depth >= pageMaxDepth {
+				return ErrTreeTooDeep
+			}
 		}
 		pos, err := pageNextPosition(ctx, tx, in.SpaceID, in.ParentID)
 		if err != nil {
@@ -298,7 +392,13 @@ type PublishParams struct {
 }
 
 func (s *Store) PublishPage(ctx context.Context, p PublishParams) (domain.Page, error) {
+	page, _, err := s.PublishPageWithPrevious(ctx, p)
+	return page, err
+}
+
+func (s *Store) PublishPageWithPrevious(ctx context.Context, p PublishParams) (domain.Page, json.RawMessage, error) {
 	var out domain.Page
+	var previous json.RawMessage
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
 		cur, err := scanPage(tx.QueryRow(ctx, `SELECT `+pageCols+` FROM pages WHERE id = $1 FOR UPDATE`, p.PageID))
 		if err != nil {
@@ -309,6 +409,9 @@ func (s *Store) PublishPage(ctx context.Context, p PublishParams) (domain.Page, 
 		}
 		if cur.Version != p.BaseVersion && !p.Force {
 			return &VersionConflictError{Current: cur.Version}
+		}
+		if cur.Version > 0 {
+			previous = cur.ContentJSON
 		}
 		next := cur.Version + 1
 		out, err = scanPage(tx.QueryRow(ctx,
@@ -330,7 +433,7 @@ func (s *Store) PublishPage(ctx context.Context, p PublishParams) (domain.Page, 
 		_, err = tx.Exec(ctx, `DELETE FROM page_drafts WHERE page_id = $1 AND user_id = $2`, p.PageID, p.ActorID)
 		return err
 	})
-	return out, err
+	return out, previous, err
 }
 
 type MoveParams struct {
@@ -362,6 +465,13 @@ func (s *Store) MovePage(ctx context.Context, p MoveParams) (MoveResult, error) 
 		if cur.Status == domain.PageStatusTrashed {
 			return ErrPageTrashed
 		}
+		var home *uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT home_page_id FROM spaces WHERE id = $1`, cur.SpaceID).Scan(&home); err != nil {
+			return notFoundIf(err)
+		}
+		if home != nil && *home == p.PageID {
+			return ErrHomePage
+		}
 		res.OldParentID = cur.ParentID
 		if p.ParentID != nil {
 			if *p.ParentID == p.PageID {
@@ -372,17 +482,26 @@ func (s *Store) MovePage(ctx context.Context, p MoveParams) (MoveResult, error) 
 			}
 			var cycle bool
 			if err := tx.QueryRow(ctx,
-				`WITH RECURSIVE anc AS (
-				     SELECT id, parent_id, 0 AS depth FROM pages WHERE id = $1
-				     UNION ALL
-				     SELECT p.id, p.parent_id, a.depth + 1 FROM pages p JOIN anc a ON p.id = a.parent_id
-				     WHERE a.depth < 1000
+				`WITH RECURSIVE anc(id) AS (
+				     SELECT $1::uuid
+				     UNION
+				     SELECT p.parent_id FROM pages p JOIN anc a ON p.id = a.id WHERE p.parent_id IS NOT NULL
 				 )
 				 SELECT EXISTS (SELECT 1 FROM anc WHERE id = $2)`, *p.ParentID, p.PageID).Scan(&cycle); err != nil {
 				return err
 			}
 			if cycle {
 				return ErrPageCycle
+			}
+			depth, err := pageAncestorCount(ctx, tx, *p.ParentID)
+			if err != nil {
+				return err
+			}
+			if depth >= pageMaxDepth {
+				return ErrTreeTooDeep
+			}
+			if err := pageSubtreeFits(ctx, tx, p.PageID, depth+1); err != nil {
+				return err
 			}
 		}
 		siblings, err := pageSiblingIDs(ctx, tx, cur.SpaceID, p.ParentID, p.PageID)
@@ -459,17 +578,25 @@ func (s *Store) TrashPage(ctx context.Context, id, actorID uuid.UUID) error {
 		if cur.Status == domain.PageStatusTrashed {
 			return ErrPageTrashed
 		}
-		var home *uuid.UUID
-		if err := tx.QueryRow(ctx, `SELECT home_page_id FROM spaces WHERE id = $1`, cur.SpaceID).Scan(&home); err != nil {
-			return notFoundIf(err)
+		var containsHome bool
+		if err := tx.QueryRow(ctx,
+			`WITH RECURSIVE sub(id) AS (
+			     SELECT id FROM pages WHERE id = $1
+			     UNION
+			     SELECT c.id FROM pages c JOIN sub ON c.parent_id = sub.id WHERE c.status <> 'trashed'
+			 )
+			 SELECT EXISTS (
+			     SELECT 1 FROM sub WHERE id = (SELECT home_page_id FROM spaces WHERE id = $2)
+			 )`, id, cur.SpaceID).Scan(&containsHome); err != nil {
+			return err
 		}
-		if home != nil && *home == id {
+		if containsHome {
 			return ErrHomePage
 		}
 		_, err = tx.Exec(ctx,
-			`WITH RECURSIVE sub AS (
+			`WITH RECURSIVE sub(id) AS (
 			     SELECT id FROM pages WHERE id = $1
-			     UNION ALL
+			     UNION
 			     SELECT c.id FROM pages c JOIN sub ON c.parent_id = sub.id WHERE c.status <> 'trashed'
 			 )
 			 UPDATE pages SET status = 'trashed', trashed_at = now(), trashed_by = $2
@@ -526,14 +653,26 @@ func (s *Store) RestorePage(ctx context.Context, id uuid.UUID) (domain.Page, err
 				}
 			}
 		}
+		if parent != nil {
+			depth, err := pageAncestorCount(ctx, tx, *parent)
+			if err != nil {
+				return err
+			}
+			if depth >= pageMaxDepth {
+				return ErrTreeTooDeep
+			}
+			if err := pageSubtreeFits(ctx, tx, id, depth+1); err != nil {
+				return err
+			}
+		}
 		pos, err := pageNextPosition(ctx, tx, cur.SpaceID, parent)
 		if err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx,
-			`WITH RECURSIVE sub AS (
+			`WITH RECURSIVE sub(id) AS (
 			     SELECT id FROM pages WHERE id = $1
-			     UNION ALL
+			     UNION
 			     SELECT c.id FROM pages c JOIN sub ON c.parent_id = sub.id
 			     WHERE c.status = 'trashed' AND c.trashed_at = $2
 			 )

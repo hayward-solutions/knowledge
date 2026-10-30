@@ -56,3 +56,10 @@ Exercised OK: login, dashboard sections, space directory, create-space dialog (k
 - Reserved slug collision (above).
 - Attachment success path and list rendering need a run with MinIO.
 - The TopBar "Create" button (A2) still links to `/spaces`; it could open the new-page dialog.
+
+## Final review fix: history "Changes" view (review-final-web P2-8)
+
+- `htmlToStructure(html)` in `components/pages/utils.ts` walks `content_html` with `DOMParser` and emits one line per block as `label| content`: `h2`, `p`, `h3[center]`, `li`, `li[x]`/`li[ ]` for task items (nested lists indented), `ol-li`, `code:go` (one line per code line), `panel:info` (container label prefixes its children, e.g. `panel:info/h2`), `table-header`/`table-row` (`| `-joined cells, `{colspan=n}`), `expand`, `quote`, `toc`, `hr`. Inline marks become markers: `**bold**`, `_italic_`, `<u>`, `~~strike~~`, `` `code` ``, `==mark==`, `[text](href)`, `[[page link]]`, `@mention`, `{status:color|text}`, `[image: alt width]`. Comment marks are ignored.
+- `VersionDiff` now takes `{ oldTitle, newTitle, oldHtml, newHtml }`, runs `diffLines` over the structural text (title is the first line), pairs each removed block with the following added block line by line and runs `diffWords` on the paired content; label changes show as old label struck and new label added, so bolding a word, a new panel or table row, or a heading level change all show as changes. Unchanged `p` lines show no label chip.
+- When the plain-text diff is identical but the structure differs, a banner says "Formatting or structure changed. The text is identical, ..."; when both are identical it says "No changes between these versions". The header also shows a "N blocks changed" count next to the word counts.
+- The Side by side and Single version tabs are unchanged. `htmlToStructure` was checked in a browser against bold, panel, link, mention, table, nested task list, code, expand, aligned heading and image markup. Lint, typecheck and build pass.

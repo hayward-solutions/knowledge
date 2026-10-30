@@ -101,3 +101,36 @@ func TestSpaceActivityHidesDraftPages(t *testing.T) {
 		t.Fatalf("space admin sees %d", n)
 	}
 }
+
+func TestSpaceActivityHidesTrashedAndPurgedPages(t *testing.T) {
+	w := newNWWorld(t)
+	trashed := testutil.CreatePage(t, w.store, w.space, w.editor.ID, "Trashed published")
+	purged := testutil.CreatePage(t, w.store, w.space, w.editor.ID, "Purged")
+	if _, err := w.store.Pool.Exec(t.Context(),
+		`UPDATE pages SET status = 'trashed', version = 1, published_at = now() WHERE id = $1`, trashed); err != nil {
+		t.Fatal(err)
+	}
+	w.publish(domain.PagePublished{PageID: w.page, SpaceID: w.space, ActorID: w.editor.ID, Version: 1})
+	w.publish(domain.PagePublished{PageID: trashed, SpaceID: w.space, ActorID: w.editor.ID, Version: 1})
+	w.publish(domain.PagePublished{PageID: purged, SpaceID: w.space, ActorID: w.editor.ID, Version: 1})
+	if _, err := w.store.Pool.Exec(t.Context(), `DELETE FROM pages WHERE id = $1`, purged); err != nil {
+		t.Fatal(err)
+	}
+
+	titles := func(u domain.User) []string {
+		out := []string{}
+		for _, a := range w.as(u).do("GET", "/api/v1/spaces/PRIV/activity", nil).list {
+			out = append(out, a["page_title"].(string))
+		}
+		return out
+	}
+	if got := titles(w.viewer); len(got) != 1 || got[0] != "Roadmap" {
+		t.Fatalf("viewer: %v", got)
+	}
+	if got := titles(w.editor); len(got) != 2 {
+		t.Fatalf("editor: %v", got)
+	}
+	if got := titles(w.spaceAdm); len(got) != 2 {
+		t.Fatalf("space admin: %v", got)
+	}
+}

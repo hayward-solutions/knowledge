@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"archive/zip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,13 +11,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/hayward-solutions/knowledge/api/internal/config"
 	"github.com/hayward-solutions/knowledge/api/internal/content"
 	"github.com/hayward-solutions/knowledge/api/internal/domain"
 	mw "github.com/hayward-solutions/knowledge/api/internal/http/middleware"
@@ -24,9 +25,23 @@ import (
 )
 
 const (
-	exportMaxImportFiles   = 200
-	exportImportTotalScale = 8
-	exportMultipartSlack   = 1 << 20
+	exportMaxImportFiles         = 100
+	exportMaxImportPages         = 500
+	exportMaxDirDepth            = 10
+	exportMaxSegmentRunes        = 120
+	exportMaxFilenameRunes       = 255
+	exportMaxPathBytes           = 4096
+	exportMaxFileBytes     int64 = 2 << 20
+	exportMaxBodyBytes     int64 = 32 << 20
+	exportMultipartSlack         = 1 << 20
+	exportConvertTimeout         = 5 * time.Second
+	exportConvertSlotCount       = 4
+)
+
+var (
+	errExportComplex = errors.New("file too complex")
+	errExportBusy    = errors.New("import busy")
+	exportSlots      = make(chan struct{}, exportConvertSlotCount)
 )
 
 type ExportHandler struct {
@@ -266,12 +281,17 @@ func exportReadErr(w http.ResponseWriter, err error) {
 }
 
 func exportSplitPath(name string) (dirs []string, base string, ok bool) {
+	if len(name) > exportMaxPathBytes {
+		return nil, "", false
+	}
 	name = strings.ReplaceAll(name, "\\", "/")
 	if strings.HasPrefix(name, "/") || (len(name) > 1 && name[1] == ':') {
 		return nil, "", false
 	}
-	var segs []string
-	for _, s := range strings.Split(name, "/") {
+	segs := make([]string, 0, 4)
+	for rest := name; rest != ""; {
+		var s string
+		s, rest, _ = strings.Cut(rest, "/")
 		s = strings.TrimSpace(s)
 		switch s {
 		case "", ".":
@@ -279,12 +299,21 @@ func exportSplitPath(name string) (dirs []string, base string, ok bool) {
 		case "..":
 			return nil, "", false
 		}
+		if len(segs) > exportMaxDirDepth || utf8.RuneCountInString(s) > exportMaxFilenameRunes {
+			return nil, "", false
+		}
 		segs = append(segs, s)
 	}
 	if len(segs) == 0 {
 		return nil, "", false
 	}
-	return segs[:len(segs)-1], segs[len(segs)-1], true
+	dirs = segs[:len(segs)-1]
+	for _, d := range dirs {
+		if utf8.RuneCountInString(d) > exportMaxSegmentRunes {
+			return nil, "", false
+		}
+	}
+	return dirs, segs[len(segs)-1], true
 }
 
 func exportIsMarkdown(base string) bool {
@@ -311,23 +340,97 @@ func exportClampTitle(title, fallback string) string {
 	return title
 }
 
-type exportPlanner struct {
-	uploads []exportUpload
-	dirs    [][]string
-	bases   []string
-	index   map[string]int
-	folders map[string]int
-	plan    []store.ImportPage
+type exportConverted struct {
+	html  string
+	title string
+	err   error
 }
 
-func (p *exportPlanner) convert(i int) (html, title string, err error) {
-	md := strings.ToValidUTF8(string(p.uploads[i].data), "�")
-	return content.FromMarkdown(md)
+func exportConvert(ctx context.Context, md string) (string, string, error) {
+	if err := content.CheckMarkdownComplexity(md); err != nil {
+		return "", "", errExportComplex
+	}
+	timer := time.NewTimer(exportConvertTimeout)
+	defer timer.Stop()
+	select {
+	case exportSlots <- struct{}{}:
+	case <-ctx.Done():
+		return "", "", ctx.Err()
+	case <-timer.C:
+		return "", "", errExportBusy
+	}
+	ch := make(chan exportConverted, 1)
+	go func() {
+		defer func() { <-exportSlots }()
+		defer func() {
+			if rec := recover(); rec != nil {
+				ch <- exportConverted{err: fmt.Errorf("markdown conversion panic: %v", rec)}
+			}
+		}()
+		html, title, err := content.FromMarkdown(md)
+		ch <- exportConverted{html: html, title: title, err: err}
+	}()
+	select {
+	case res := <-ch:
+		return res.html, res.title, res.err
+	case <-ctx.Done():
+		return "", "", ctx.Err()
+	case <-timer.C:
+		return "", "", errExportComplex
+	}
+}
+
+type exportTrieKey struct {
+	parent int
+	name   string
+}
+
+type exportPlanner struct {
+	ctx        context.Context
+	uploads    []exportUpload
+	nodes      []int
+	bases      []string
+	nodeParent []int
+	nodeName   []string
+	trie       map[exportTrieKey]int
+	index      map[int]int
+	nodePlan   map[int]int
+	plan       []store.ImportPage
+	failed     string
+}
+
+func (p *exportPlanner) node(dirs []string) int {
+	cur := -1
+	for _, d := range dirs {
+		key := exportTrieKey{parent: cur, name: d}
+		n, ok := p.trie[key]
+		if !ok {
+			n = len(p.nodeName)
+			p.nodeName = append(p.nodeName, d)
+			p.nodeParent = append(p.nodeParent, cur)
+			p.trie[key] = n
+		}
+		cur = n
+	}
+	return cur
+}
+
+func (p *exportPlanner) path(node int) string {
+	var names []string
+	for n := node; n >= 0; n = p.nodeParent[n] {
+		names = append(names, p.nodeName[n])
+	}
+	for i, j := 0, len(names)-1; i < j; i, j = i+1, j-1 {
+		names[i], names[j] = names[j], names[i]
+	}
+	return strings.Join(names, "/")
 }
 
 func (p *exportPlanner) page(i, parent int, fallback, message string) error {
-	html, title, err := p.convert(i)
+	md := strings.ToValidUTF8(string(p.uploads[i].data), "�")
+	html, title, err := exportConvert(p.ctx, md)
 	if err != nil {
+		p.failed = p.uploads[i].name
 		return err
 	}
 	p.plan = append(p.plan, store.ImportPage{
@@ -340,33 +443,47 @@ func (p *exportPlanner) page(i, parent int, fallback, message string) error {
 	return nil
 }
 
-func (p *exportPlanner) folder(dirs []string) (int, error) {
-	if len(dirs) == 0 {
-		return -1, nil
-	}
-	key := strings.Join(dirs, "/")
-	if idx, ok := p.folders[key]; ok {
-		return idx, nil
-	}
-	parent, err := p.folder(dirs[:len(dirs)-1])
-	if err != nil {
-		return 0, err
-	}
-	name := content.TitleFromFolder(dirs[len(dirs)-1])
-	if i, ok := p.index[key]; ok {
-		if err := p.page(i, parent, name, "Imported from "+p.uploads[i].name); err != nil {
-			return 0, err
+func (p *exportPlanner) folder(node int) (int, error) {
+	parent := -1
+	var chain []int
+	for n := node; n >= 0; n = p.nodeParent[n] {
+		if idx, ok := p.nodePlan[n]; ok {
+			parent = idx
+			break
 		}
-	} else {
-		p.plan = append(p.plan, store.ImportPage{
-			Parent:  parent,
-			Title:   exportClampTitle(name, ""),
-			Message: "Imported from folder " + key,
-		})
+		chain = append(chain, n)
 	}
-	idx := len(p.plan) - 1
-	p.folders[key] = idx
-	return idx, nil
+	for i := len(chain) - 1; i >= 0; i-- {
+		n := chain[i]
+		name := content.TitleFromFolder(p.nodeName[n])
+		if fi, ok := p.index[n]; ok {
+			if err := p.page(fi, parent, name, "Imported from "+p.uploads[fi].name); err != nil {
+				return 0, err
+			}
+		} else {
+			p.plan = append(p.plan, store.ImportPage{
+				Parent:  parent,
+				Title:   exportClampTitle(name, ""),
+				Message: "Imported from folder " + p.path(n),
+			})
+		}
+		parent = len(p.plan) - 1
+		p.nodePlan[n] = parent
+	}
+	return parent, nil
+}
+
+func exportConvertFailed(w http.ResponseWriter, r *http.Request, name string, err error) {
+	switch {
+	case r.Context().Err() != nil:
+	case errors.Is(err, errExportComplex):
+		httpErr(w, http.StatusBadRequest, "file too complex: "+name)
+	case errors.Is(err, errExportBusy):
+		httpErr(w, http.StatusServiceUnavailable, "import is busy, try again")
+	default:
+		log.Printf("import convert %s: %v", name, err)
+		httpErr(w, http.StatusBadRequest, "unsupported markdown structure: "+name)
+	}
 }
 
 func (h *ExportHandler) Import(w http.ResponseWriter, r *http.Request) {
@@ -376,11 +493,11 @@ func (h *ExportHandler) Import(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, http.StatusUnauthorized, "unauthenticated")
 		return
 	}
-	maxFile := config.DefaultAttachmentMaxBytes
-	if h.Config != nil && h.Config.AttachmentMaxBytes > 0 {
+	maxFile := exportMaxFileBytes
+	if h.Config != nil && h.Config.AttachmentMaxBytes > 0 && h.Config.AttachmentMaxBytes < maxFile {
 		maxFile = h.Config.AttachmentMaxBytes
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxFile*exportImportTotalScale+exportMultipartSlack)
+	r.Body = http.MaxBytesReader(w, r.Body, exportMaxBodyBytes+exportMultipartSlack)
 	mr, err := r.MultipartReader()
 	if err != nil {
 		httpErr(w, http.StatusBadRequest, "expected multipart/form-data")
@@ -404,6 +521,10 @@ func (h *ExportHandler) Import(w http.ResponseWriter, r *http.Request) {
 				httpErr(w, http.StatusBadRequest, "each files part needs a filename")
 				return
 			}
+			if len(name) > exportMaxPathBytes {
+				httpErr(w, http.StatusBadRequest, "invalid file path")
+				return
+			}
 			if len(uploads) >= exportMaxImportFiles {
 				httpErr(w, http.StatusBadRequest, fmt.Sprintf("too many files (max %d)", exportMaxImportFiles))
 				return
@@ -414,7 +535,7 @@ func (h *ExportHandler) Import(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if int64(len(data)) > maxFile {
-				httpErr(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file too large: %s", name))
+				httpErr(w, http.StatusRequestEntityTooLarge, "file too large")
 				return
 			}
 			uploads = append(uploads, exportUpload{name: name, data: data})
@@ -433,29 +554,35 @@ func (h *ExportHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 
 	planner := &exportPlanner{
-		uploads: uploads,
-		dirs:    make([][]string, len(uploads)),
-		bases:   make([]string, len(uploads)),
-		index:   map[string]int{},
-		folders: map[string]int{},
+		ctx:      r.Context(),
+		uploads:  uploads,
+		nodes:    make([]int, len(uploads)),
+		bases:    make([]string, len(uploads)),
+		trie:     map[exportTrieKey]int{},
+		index:    map[int]int{},
+		nodePlan: map[int]int{},
 	}
 	for i, up := range uploads {
 		dirs, base, ok := exportSplitPath(up.name)
 		if !ok {
-			httpErr(w, http.StatusBadRequest, "invalid file path: "+up.name)
+			httpErr(w, http.StatusBadRequest, "invalid file path")
 			return
 		}
 		if !exportIsMarkdown(base) {
-			httpErr(w, http.StatusBadRequest, "only Markdown (.md) files can be imported: "+up.name)
+			httpErr(w, http.StatusBadRequest, "only Markdown (.md) files can be imported")
 			return
 		}
-		planner.dirs[i], planner.bases[i] = dirs, base
-		if len(dirs) > 0 && exportIsIndex(base) {
-			key := strings.Join(dirs, "/")
-			if _, exists := planner.index[key]; !exists {
-				planner.index[key] = i
+		node := planner.node(dirs)
+		planner.nodes[i], planner.bases[i] = node, base
+		if node >= 0 && exportIsIndex(base) {
+			if _, exists := planner.index[node]; !exists {
+				planner.index[node] = i
 			}
 		}
+	}
+	if len(planner.nodeName)+len(uploads)-len(planner.index) > exportMaxImportPages {
+		httpErr(w, http.StatusBadRequest, fmt.Sprintf("too many pages (max %d)", exportMaxImportPages))
+		return
 	}
 
 	ctx := r.Context()
@@ -486,29 +613,37 @@ func (h *ExportHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for i := range uploads {
-		dirs, base := planner.dirs[i], planner.bases[i]
-		if len(dirs) > 0 && exportIsIndex(base) {
-			if idx, ok := planner.index[strings.Join(dirs, "/")]; ok && idx == i {
-				if _, err := planner.folder(dirs); err != nil {
-					internalErr(w, r, err, "failed to convert markdown")
-					return
-				}
-				continue
-			}
+		if ctx.Err() != nil {
+			return
 		}
-		parent, err := planner.folder(dirs)
+		node, base := planner.nodes[i], planner.bases[i]
+		if node >= 0 && exportIsIndex(base) && planner.index[node] == i {
+			if _, err := planner.folder(node); err != nil {
+				exportConvertFailed(w, r, planner.failed, err)
+				return
+			}
+			continue
+		}
+		parent, err := planner.folder(node)
 		if err != nil {
-			internalErr(w, r, err, "failed to convert markdown")
+			exportConvertFailed(w, r, planner.failed, err)
 			return
 		}
 		if err := planner.page(i, parent, content.TitleFromFilename(base), "Imported from "+uploads[i].name); err != nil {
-			internalErr(w, r, err, "failed to convert markdown")
+			exportConvertFailed(w, r, planner.failed, err)
 			return
 		}
+	}
+	if ctx.Err() != nil {
+		return
 	}
 
 	created, err := h.Store.ImportPages(ctx, sc.ID, baseParent, u.ID, planner.plan)
 	if err != nil {
+		if errors.Is(err, store.ErrImportTooDeep) {
+			httpErr(w, http.StatusBadRequest, "page tree is too deep")
+			return
+		}
 		pageStoreErr(w, r, err, "failed to import pages")
 		return
 	}

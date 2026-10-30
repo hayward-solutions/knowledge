@@ -230,7 +230,18 @@ func (s *Service) pagePublished(ctx context.Context, ev domain.PagePublished) er
 	}
 
 	rs := newRecipients(ev.ActorID)
+	alreadyMentioned, err := s.store.ListUnreadPageMentionUserIDs(ctx, ev.PageID, ev.MentionedUserIDs)
+	if err != nil {
+		return err
+	}
+	skip := make(map[uuid.UUID]struct{}, len(alreadyMentioned))
+	for _, id := range alreadyMentioned {
+		skip[id] = struct{}{}
+	}
 	for _, id := range ev.MentionedUserIDs {
+		if _, seen := skip[id]; seen {
+			continue
+		}
 		rs.add(id, TypePageMentioned)
 	}
 	watchers, err := s.store.ListPublishWatcherIDs(ctx, ev.PageID, ev.SpaceID)

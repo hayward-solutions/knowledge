@@ -22,6 +22,8 @@ type OIDCConfig struct {
 	NameClaim    string
 	RedirectURL  string
 	ProviderName string
+
+	RequireEmailVerified bool
 }
 
 func LoadOIDC(ctx context.Context, s config.OIDCSettings) (*OIDCConfig, error) {
@@ -56,6 +58,8 @@ func LoadOIDC(ctx context.Context, s config.OIDCSettings) (*OIDCConfig, error) {
 		NameClaim:    s.NameClaim,
 		RedirectURL:  s.RedirectURL,
 		ProviderName: s.ProviderName,
+
+		RequireEmailVerified: s.RequireEmailVerified,
 	}, nil
 }
 

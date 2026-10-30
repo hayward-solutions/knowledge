@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -156,9 +157,27 @@ func (s *Store) UpdateUserProfile(ctx context.Context, id uuid.UUID, email, disp
 	return s.AdminUpdateUser(ctx, id, UserUpdate{Email: email, DisplayName: displayName})
 }
 
+const adminSetLockKey int64 = 7351001
+
+func lockAdminSet(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, adminSetLockKey)
+	return err
+}
+
+func countActiveAdmins(ctx context.Context, tx pgx.Tx) (int, error) {
+	var n int
+	err := tx.QueryRow(ctx, `SELECT count(*) FROM users WHERE is_system_admin AND disabled_at IS NULL`).Scan(&n)
+	return n, err
+}
+
 func (s *Store) AdminUpdateUser(ctx context.Context, id uuid.UUID, upd UserUpdate) (domain.User, error) {
 	var out domain.User
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		if upd.IsSystemAdmin != nil || upd.Disabled != nil {
+			if err := lockAdminSet(ctx, tx); err != nil {
+				return err
+			}
+		}
 		target, err := scanUser(tx.QueryRow(ctx, `SELECT `+userCols+` FROM users WHERE id = $1 FOR UPDATE`, id))
 		if err != nil {
 			return err
@@ -167,17 +186,8 @@ func (s *Store) AdminUpdateUser(ctx context.Context, id uuid.UUID, upd UserUpdat
 		demoting := upd.IsSystemAdmin != nil && !*upd.IsSystemAdmin && target.IsSystemAdmin
 		disabling := upd.Disabled != nil && *upd.Disabled && target.IsSystemAdmin && target.DisabledAt == nil
 		if (demoting || disabling) && target.DisabledAt == nil {
-			rows, err := tx.Query(ctx,
-				`SELECT id FROM users WHERE is_system_admin AND disabled_at IS NULL FOR UPDATE`)
+			n, err := countActiveAdmins(ctx, tx)
 			if err != nil {
-				return err
-			}
-			n := 0
-			for rows.Next() {
-				n++
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
 				return err
 			}
 			if n <= 1 {
@@ -231,15 +241,58 @@ func (s *Store) SetUserPassword(ctx context.Context, id uuid.UUID, hash string) 
 	return nil
 }
 
-func (s *Store) UpsertOIDCUser(ctx context.Context, issuer, subject, email, displayName string, isSystemAdmin *bool) (domain.User, error) {
+var ErrEmailNotVerified = errors.New("email not verified")
+
+func (s *Store) UpsertOIDCUser(ctx context.Context, issuer, subject, email, displayName string, isSystemAdmin *bool, allowEmailLink bool) (domain.User, error) {
+	u, err := s.upsertOIDCUser(ctx, issuer, subject, email, displayName, isSystemAdmin, allowEmailLink)
+	if IsUniqueViolation(err) {
+		return s.upsertOIDCUser(ctx, issuer, subject, email, displayName, isSystemAdmin, allowEmailLink)
+	}
+	return u, err
+}
+
+func (s *Store) upsertOIDCUser(ctx context.Context, issuer, subject, email, displayName string, isSystemAdmin *bool, allowEmailLink bool) (domain.User, error) {
 	var u domain.User
 	email = strings.ToLower(strings.TrimSpace(email))
 	err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		if isSystemAdmin != nil && !*isSystemAdmin {
+			if err := lockAdminSet(ctx, tx); err != nil {
+				return err
+			}
+		}
+
+		guardDemotion := func(userID uuid.UUID) (*bool, error) {
+			if isSystemAdmin == nil || *isSystemAdmin {
+				return isSystemAdmin, nil
+			}
+			var isAdmin bool
+			var disabled *time.Time
+			if err := tx.QueryRow(ctx, `SELECT is_system_admin, disabled_at FROM users WHERE id = $1`, userID).Scan(&isAdmin, &disabled); err != nil {
+				return nil, err
+			}
+			if !isAdmin || disabled != nil {
+				return isSystemAdmin, nil
+			}
+			n, err := countActiveAdmins(ctx, tx)
+			if err != nil {
+				return nil, err
+			}
+			if n <= 1 {
+				log.Printf("warning: oidc admin-group mapping would demote the last active system admin %s; keeping the flag", userID)
+				return nil, nil
+			}
+			return isSystemAdmin, nil
+		}
+
 		var userID uuid.UUID
 		err := tx.QueryRow(ctx,
 			`SELECT user_id FROM oidc_identities WHERE issuer = $1 AND subject = $2`, issuer, subject).Scan(&userID)
 		switch {
 		case err == nil:
+			effective, err := guardDemotion(userID)
+			if err != nil {
+				return err
+			}
 			_, err = tx.Exec(ctx,
 				`UPDATE users SET
 				   display_name = $2,
@@ -247,7 +300,7 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, issuer, subject, email, disp
 				   is_system_admin = COALESCE($4, is_system_admin),
 				   updated_at = now()
 				 WHERE id = $1`,
-				userID, displayName, email, isSystemAdmin)
+				userID, displayName, email, effective)
 			if err != nil {
 				return err
 			}
@@ -255,9 +308,16 @@ func (s *Store) UpsertOIDCUser(ctx context.Context, issuer, subject, email, disp
 			err = tx.QueryRow(ctx, `SELECT id FROM users WHERE email = $1 FOR UPDATE`, email).Scan(&userID)
 			switch {
 			case err == nil:
+				if !allowEmailLink {
+					return ErrEmailNotVerified
+				}
+				effective, err := guardDemotion(userID)
+				if err != nil {
+					return err
+				}
 				_, err = tx.Exec(ctx,
 					`UPDATE users SET display_name = $2, is_system_admin = COALESCE($3, is_system_admin), updated_at = now()
-					 WHERE id = $1`, userID, displayName, isSystemAdmin)
+					 WHERE id = $1`, userID, displayName, effective)
 				if err != nil {
 					return err
 				}

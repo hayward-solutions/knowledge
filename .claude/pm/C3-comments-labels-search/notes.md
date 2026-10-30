@@ -58,3 +58,12 @@ Runtime check: real Go API (built from `api/`, local Postgres container, no obje
 - `PageComments` shows a hint ("select text in the page to leave an inline comment") only when `contentRef` is passed. Without `contentRef` inline anchoring, the selection button and orphan notes are all off and inline threads still list with their quotes.
 - The page view must keep the element behind `contentRef` mounted while `PageComments` is mounted; client anchors are DOM mutations inside the `ContentView` container, which React does not diff (it only resets them when `content_html` changes, which the observer handles).
 - The harness exercised a real API with the admin user as the only author; edit-own and delete-others rules were not tested across users.
+
+## Final review fix: disambiguating repeated quotes (P2-3)
+
+- `InlineAnchor` in `web/lib/api/types.ts` is now `{quoted_text, prefix?, suffix?}` (additive).
+- Creating from the view: `SelectionCommentButton` calls `captureContext(root, range, quote)` (anchors.ts), which builds the same whitespace-normalised corpus used for anchoring, finds the selection start with a binary search over `Range.comparePoint`, and returns up to 32 characters before and after (crossing block boundaries, separated by a single space). It is sent as `inline_anchor {quoted_text, prefix, suffix}`; empty values are omitted, and nothing is sent if the quote cannot be located in the corpus.
+- Anchoring (`pickCandidate`): every occurrence of the quote is collected (overlapping allowed). With stored context each is scored as common-suffix-length(text before, prefix) + common-prefix-length(text after, suffix), so an exact match scores highest and partial matches rank by overlap; ties keep the earliest. Without prefix and suffix the first occurrence wins, as before.
+- Occurrences that overlap text already inside another comment's `span[data-type=comment]` are treated as not clean. A clean occurrence is preferred; the best unclean one is used only when there is no clean one, or when stored context scores strictly better for the unclean one (so two comments on exactly the same text still land on the same spot rather than jumping to another repetition).
+- Verified in a browser with the transpiled `anchors.ts` on a page with repeated "Yes": context-captured third occurrence anchored on the third; no context anchored on the first clean one; context matching only a marked occurrence anchored inside it. Old comments without prefix/suffix behave as before.
+- Gate: lint, typecheck and build clean.

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -27,6 +28,8 @@ type OIDCSettings struct {
 	EmailClaim   string
 	NameClaim    string
 	ProviderName string
+
+	RequireEmailVerified bool
 }
 
 func (o OIDCSettings) Configured() bool {
@@ -54,6 +57,7 @@ type Config struct {
 	OIDC               OIDCSettings
 	Storage            StorageSettings
 	AttachmentMaxBytes int64
+	TrustedProxies     []netip.Prefix
 }
 
 func Load() (*Config, error) {
@@ -95,6 +99,8 @@ func LoadFrom(getenv func(string) string) (*Config, error) {
 			EmailClaim:   get("OIDC_EMAIL_CLAIM", "email"),
 			NameClaim:    get("OIDC_NAME_CLAIM", "name"),
 			ProviderName: get("OIDC_PROVIDER_NAME", "SSO"),
+
+			RequireEmailVerified: parseBool(getenv("OIDC_REQUIRE_EMAIL_VERIFIED"), true),
 		},
 		Storage:            loadStorage(getenv),
 		AttachmentMaxBytes: DefaultAttachmentMaxBytes,
@@ -113,6 +119,11 @@ func LoadFrom(getenv func(string) string) (*Config, error) {
 		}
 		cfg.AttachmentMaxBytes = n
 	}
+	proxies, err := ParseTrustedProxies(splitList(getenv("TRUSTED_PROXIES")))
+	if err != nil {
+		return nil, err
+	}
+	cfg.TrustedProxies = proxies
 	if len(cfg.OIDC.Scopes) == 0 {
 		cfg.OIDC.Scopes = []string{"openid", "profile", "email", "groups"}
 	}
@@ -158,4 +169,25 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+func ParseTrustedProxies(entries []string) ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(entries))
+	for _, e := range entries {
+		if strings.Contains(e, "/") {
+			p, err := netip.ParsePrefix(e)
+			if err != nil {
+				return nil, fmt.Errorf("TRUSTED_PROXIES entry %q is not a valid CIDR", e)
+			}
+			out = append(out, p.Masked())
+			continue
+		}
+		a, err := netip.ParseAddr(e)
+		if err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXIES entry %q is not a valid IP or CIDR", e)
+		}
+		a = a.Unmap()
+		out = append(out, netip.PrefixFrom(a, a.BitLen()))
+	}
+	return out, nil
 }

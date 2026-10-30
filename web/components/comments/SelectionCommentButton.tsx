@@ -3,12 +3,18 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { MessageSquarePlus } from "lucide-react";
+import { captureContext } from "./anchors";
 import { MAX_QUOTE_LENGTH, normalizeQuote } from "./commentUtils";
 
-interface Placement {
+export interface SelectionRequest {
+  quote: string;
+  prefix: string;
+  suffix: string;
+}
+
+interface Placement extends SelectionRequest {
   top: number;
   left: number;
-  text: string;
 }
 
 const IGNORED = 'pre, [data-type="toc"], .kn-toc, button, input, textarea, [contenteditable="true"]';
@@ -20,7 +26,7 @@ export function SelectionCommentButton({
 }: {
   contentRef?: RefObject<HTMLElement>;
   enabled: boolean;
-  onRequest: (quote: string) => void;
+  onRequest: (request: SelectionRequest) => void;
 }) {
   const [placement, setPlacement] = useState<Placement | null>(null);
   const draggingRef = useRef(false);
@@ -63,7 +69,14 @@ export function SelectionCommentButton({
       const above = !narrow && rect.top > 84;
       const top = above ? rect.top - 40 : rect.bottom + 10;
       const left = Math.min(Math.max(rect.left + rect.width / 2, 64), window.innerWidth - 64);
-      setPlacement({ top, left, text });
+      const context = captureContext(root, range, text);
+      setPlacement({
+        top,
+        left,
+        quote: text,
+        prefix: context?.prefix ?? "",
+        suffix: context?.suffix ?? "",
+      });
     };
 
     const schedule = () => {
@@ -107,10 +120,10 @@ export function SelectionCommentButton({
       data-selection-comment
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
-        const text = placement.text;
+        const { quote, prefix, suffix } = placement;
         window.getSelection()?.removeAllRanges();
         setPlacement(null);
-        onRequest(text);
+        onRequest({ quote, prefix, suffix });
       }}
       style={{ position: "fixed", top: placement.top, left: placement.left, transform: "translateX(-50%)" }}
       className="btn btn-primary z-40 shadow-overlay animate-scale-in"

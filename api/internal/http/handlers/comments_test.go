@@ -501,6 +501,46 @@ func TestCommentInlineAnchor(t *testing.T) {
 	}
 }
 
+func TestCommentInlineAnchorContext(t *testing.T) {
+	w := newCommentWorld(t)
+	viewer := w.as(w.viewer)
+
+	body := commentBody("which one?")
+	body["inline_anchor"] = map[string]any{"quoted_text": "fox", "prefix": " the quick brown ", "suffix": " jumps over"}
+	r := w.post(viewer, w.page, body)
+	if r.status != 201 {
+		t.Fatalf("create: %d %s", r.status, r.raw)
+	}
+	anchor := r.body["inline_anchor"].(map[string]any)
+	if len(anchor) != 3 || anchor["quoted_text"] != "fox" || anchor["prefix"] != "the quick brown" || anchor["suffix"] != "jumps over" {
+		t.Fatalf("anchor: %s", r.raw)
+	}
+	l := w.list(viewer, w.page)
+	if got := l.list[0]["inline_anchor"].(map[string]any); got["prefix"] != "the quick brown" || got["suffix"] != "jumps over" {
+		t.Fatalf("list anchor: %s", l.raw)
+	}
+
+	only := commentBody("no context")
+	only["inline_anchor"] = map[string]any{"quoted_text": "fox", "prefix": "   "}
+	r = w.post(viewer, w.page, only)
+	if a := r.body["inline_anchor"].(map[string]any); r.status != 201 || len(a) != 1 || a["quoted_text"] != "fox" {
+		t.Fatalf("blank context dropped: %d %s", r.status, r.raw)
+	}
+
+	exact := commentBody("limit")
+	exact["inline_anchor"] = map[string]any{"quoted_text": "fox", "prefix": strings.Repeat("p", 64), "suffix": strings.Repeat("s", 64)}
+	if r := w.post(viewer, w.page, exact); r.status != 201 {
+		t.Fatalf("64 chars allowed: %d %s", r.status, r.raw)
+	}
+	for _, field := range []string{"prefix", "suffix"} {
+		long := commentBody("too long")
+		long["inline_anchor"] = map[string]any{"quoted_text": "fox", field: strings.Repeat("x", 65)}
+		if r := w.post(viewer, w.page, long); r.status != 400 {
+			t.Fatalf("%s over 64: %d", field, r.status)
+		}
+	}
+}
+
 func TestCommentCreatedEventCarriesMentions(t *testing.T) {
 	w := newCommentWorld(t)
 	viewer := w.as(w.viewer)

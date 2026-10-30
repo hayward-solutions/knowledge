@@ -40,7 +40,7 @@ func (h *ActivityHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := queryInt(r, "limit", 30, 1, 100)
-	items, err := h.Store.ListSpaceActivity(r.Context(), sc.ID, u.ID, sc.Role == domain.RoleAdmin, before, limit)
+	items, err := h.Store.ListSpaceActivity(r.Context(), sc.ID, u.ID, sc.Role, before, limit)
 	if err != nil {
 		internalErr(w, r, err, "failed to load activity")
 		return

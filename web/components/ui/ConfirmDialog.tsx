@@ -29,14 +29,19 @@ export function ConfirmDialog({
       width={440}
       footer={
         <>
-          <Button variant="ghost" onClick={onCancel} disabled={busy}>
+          <Button
+            variant="ghost"
+            onClick={onCancel}
+            disabled={busy}
+            data-autofocus={tone === "danger" ? true : undefined}
+          >
             {cancelLabel}
           </Button>
           <Button
             variant={tone === "danger" ? "danger" : "primary"}
             onClick={onConfirm}
             disabled={busy}
-            data-autofocus
+            data-autofocus={tone === "danger" ? undefined : true}
           >
             {confirmLabel}
           </Button>

@@ -4,10 +4,12 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { format, formatDistanceToNow } from "date-fns";
-import { AlertTriangle, Check, Info, Loader2, Users, X } from "lucide-react";
+import Link from "next/link";
+import { AlertTriangle, Check, Info, Loader2, Trash2, Users, X } from "lucide-react";
 import {
   ApiError,
   attachmentContentPath,
+  createComment,
   discardDraft,
   getDraft,
   getPage,
@@ -16,13 +18,20 @@ import {
   saveDraft,
   sendEditingHeartbeat,
   uploadAttachment,
+  type InlineAnchor,
   type PageDetail,
   type PageDraft,
   type UserRef,
 } from "@/lib/api";
 import { useMe } from "@/lib/auth";
 import { Editor } from "@/components/editor/Editor";
-import type { EditorChange, EditorHandle, UploadedImage } from "@/components/editor/types";
+import { getSelectionContext } from "@/components/editor/commentAnchor";
+import type {
+  CommentSelection,
+  EditorChange,
+  EditorHandle,
+  UploadedImage,
+} from "@/components/editor/types";
 import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -48,6 +57,74 @@ async function loadDraft(pageId: string): Promise<PageDraft | null> {
 
 function messageOf(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
+}
+
+type InlineAnchorInput = InlineAnchor & { prefix: string; suffix: string };
+
+interface CommentTarget {
+  from: number;
+  to: number;
+  anchor: InlineAnchorInput;
+}
+
+function isPageTrashed(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 409 && err.code === "page_trashed";
+}
+
+function InlineCommentDialog({
+  target,
+  onClose,
+  onSubmit,
+}: {
+  target: CommentTarget;
+  onClose: () => void;
+  onSubmit: (body: EditorChange) => Promise<void>;
+}) {
+  const ref = useRef<EditorHandle>(null);
+  const [busy, setBusy] = useState(false);
+  const [empty, setEmpty] = useState(true);
+
+  async function submit() {
+    const body = ref.current?.getValue();
+    if (!body || ref.current?.isEmpty()) return;
+    setBusy(true);
+    try {
+      await onSubmit(body);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title="Add inline comment"
+      onClose={() => !busy && onClose()}
+      width={520}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void submit()} disabled={busy || empty}>
+            {busy ? "Commenting..." : "Comment"}
+          </Button>
+        </>
+      }
+    >
+      <blockquote className="mb-3 max-h-24 overflow-y-auto border-l-2 border-warning-500 bg-warning-50 px-3 py-2 text-sm text-ink-700">
+        {target.anchor.quoted_text}
+      </blockquote>
+      <Editor
+        ref={ref}
+        variant="compact"
+        value={{ json: null, html: "" }}
+        placeholder="Write a comment"
+        autofocus
+        ariaLabel="Inline comment"
+        onChange={() => setEmpty(ref.current?.isEmpty() ?? true)}
+      />
+    </Modal>
+  );
 }
 
 function joinNames(users: UserRef[]): string {
@@ -160,11 +237,11 @@ function EditLoader({ spaceKey, pageId }: { spaceKey: string; pageId: string }) 
       <Centered>
         <EmptyState
           title="This page is in the trash"
-          description="Restore it before editing."
+          description="This page is in the trash. Restore it to edit."
           action={
-            <Button variant="secondary" onClick={() => router.push(`/spaces/${spaceKey}/trash`)}>
-              Open trash
-            </Button>
+            <Link href={viewHref} className="btn btn-secondary">
+              Back to page
+            </Link>
           }
         />
       </Centered>
@@ -289,6 +366,9 @@ function EditSession({
   const [publishing, setPublishing] = useState(false);
   const [conflictVersion, setConflictVersion] = useState<number | null>(null);
   const [leaveConfirm, setLeaveConfirm] = useState(false);
+  const [trashed, setTrashed] = useState(false);
+  const trashedRef = useRef(false);
+  const [commentTarget, setCommentTarget] = useState<CommentTarget | null>(null);
 
   const viewHref = `/spaces/${spaceKey}/pages/${pageId}/${page.slug}`;
   const isNew = page.status === "draft";
@@ -300,8 +380,22 @@ function EditSession({
     }
   }, []);
 
+  const markTrashed = useCallback(() => {
+    trashedRef.current = true;
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setTrashed(true);
+    setStatus("idle");
+    setSaveError(null);
+    setPublishOpen(false);
+    setConflictVersion(null);
+  }, []);
+
   const saveNow = useCallback((): Promise<boolean> => {
     clearTimer();
+    if (trashedRef.current) return Promise.resolve(true);
     if (inflightRef.current) {
       return inflightRef.current.then(() => saveRef.current());
     }
@@ -326,6 +420,10 @@ function EditSession({
         return true;
       })
       .catch((err: unknown) => {
+        if (isPageTrashed(err)) {
+          markTrashed();
+          return true;
+        }
         setStatus("error");
         setSaveError(messageOf(err, "Could not save draft"));
         return false;
@@ -335,13 +433,14 @@ function EditSession({
       });
     inflightRef.current = request;
     return request;
-  }, [clearTimer, page.title, pageId]);
+  }, [clearTimer, markTrashed, page.title, pageId]);
 
   useEffect(() => {
     saveRef.current = saveNow;
   }, [saveNow]);
 
   const markDirty = useCallback(() => {
+    if (trashedRef.current) return;
     dirtyRef.current = true;
     revisionRef.current += 1;
     setStatus((s) => (s === "saving" ? s : "unsaved"));
@@ -382,7 +481,7 @@ function EditSession({
   useEffect(() => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
-      if (dirtyRef.current) void saveRef.current();
+      if (dirtyRef.current && !trashedRef.current) void saveRef.current();
     };
   }, []);
 
@@ -414,7 +513,7 @@ function EditSession({
 
   const flushSave = useCallback(async (): Promise<boolean> => {
     clearTimer();
-    while (dirtyRef.current) {
+    while (dirtyRef.current && !trashedRef.current) {
       const ok = await saveRef.current();
       if (!ok) return false;
     }
@@ -482,7 +581,9 @@ function EditSession({
       toast.success(isNew ? "Page published" : "Changes published");
       router.push(`/spaces/${spaceKey}/pages/${pageId}/${published.slug || page.slug}`);
     } catch (err) {
-      if (isVersionConflict(err)) {
+      if (isPageTrashed(err)) {
+        markTrashed();
+      } else if (isVersionConflict(err)) {
         setPublishOpen(false);
         setConflictVersion(err.body?.current_version ?? page.version + 1);
       } else {
@@ -491,6 +592,44 @@ function EditSession({
     } finally {
       setPublishing(false);
     }
+  }
+
+  const onRequestComment = useCallback((selection: CommentSelection) => {
+    const editor = editorRef.current?.editor;
+    if (!editor || trashedRef.current) return;
+    const anchor = getSelectionContext(editor, selection);
+    if (!anchor.quoted_text.trim()) return;
+    setCommentTarget({ from: selection.from, to: selection.to, anchor });
+  }, []);
+
+  async function submitComment(body: EditorChange) {
+    const target = commentTarget;
+    if (!target) return;
+    let created;
+    try {
+      created = await createComment(pageId, {
+        body_json: body.json,
+        body_html: body.html,
+        inline_anchor: target.anchor,
+      });
+    } catch (err) {
+      toast.error(messageOf(err, "Could not add the comment"));
+      return;
+    }
+    setCommentTarget(null);
+    const editor = editorRef.current?.editor;
+    if (editor) {
+      const current = getSelectionContext(editor, target).quoted_text;
+      if (current === target.anchor.quoted_text) {
+        editor.chain().focus().setTextSelection({ from: target.from, to: target.to }).setCommentMark(created.id).run();
+        toast.success("Comment added");
+      } else {
+        toast.error("Comment saved, but the text moved so it could not be highlighted");
+      }
+    }
+    void qc.invalidateQueries({
+      predicate: (q) => String(q.queryKey[0]).includes("comment"),
+    });
   }
 
   async function reloadLatest() {
@@ -516,7 +655,7 @@ function EditSession({
           </span>
         </div>
         <SaveIndicator
-          status={status}
+          status={trashed ? "idle" : status}
           savedAt={savedAt}
           error={saveError}
           onRetry={() => void saveNow()}
@@ -526,7 +665,7 @@ function EditSession({
         </Button>
         <Button
           variant="primary"
-          disabled={!title.trim() || publishing}
+          disabled={!title.trim() || publishing || trashed}
           onClick={() => {
             clearTimer();
             setPublishOpen(true);
@@ -537,7 +676,23 @@ function EditSession({
       </div>
 
       <div className="mx-auto w-full max-w-[940px] px-4 pb-16 pt-6 sm:px-6">
-        {showResume && resumed && (
+        {trashed && (
+          <div
+            role="alert"
+            className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-danger-100 bg-danger-50 px-3 py-2 text-sm text-ink-800"
+          >
+            <Trash2 size={16} className="shrink-0 text-danger-600" />
+            <span className="min-w-0 flex-1">
+              This page is in the trash. Restore it to edit. Your latest changes were not saved, so
+              copy anything you need first.
+            </span>
+            <Link href={viewHref} className="btn btn-secondary btn-sm">
+              Back to page
+            </Link>
+          </div>
+        )}
+
+        {showResume && resumed && !trashed && (
           <div
             role="status"
             className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-brand-100 bg-brand-50 px-3 py-2 text-sm text-ink-800"
@@ -592,6 +747,7 @@ function EditSession({
           placeholder="Page title"
           aria-label="Page title"
           maxLength={255}
+          readOnly={trashed}
           autoFocus={isNew && !source.title.trim()}
           className="mb-4 w-full border-0 bg-transparent px-0 text-3xl font-bold tracking-tight text-ink-900 outline-none placeholder:text-ink-300 focus-visible:outline-none sm:text-4xl"
         />
@@ -600,11 +756,20 @@ function EditSession({
           ref={editorRef}
           value={{ json: source.content_json, html: source.content_html }}
           onChange={onEditorChange}
-          editable
+          editable={!trashed}
           variant="full"
           uploadImage={uploadImage}
+          onRequestComment={onRequestComment}
         />
       </div>
+
+      {commentTarget && (
+        <InlineCommentDialog
+          target={commentTarget}
+          onClose={() => setCommentTarget(null)}
+          onSubmit={submitComment}
+        />
+      )}
 
       {publishOpen && (
         <Modal

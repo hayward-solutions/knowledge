@@ -36,7 +36,7 @@ export function useInlineAnchors({
   });
 
   const signature = useMemo(
-    () => threads.map((t) => `${t.id}\u0000${t.quote}`).join("\u0001"),
+    () => threads.map((t) => `${t.id}\u0000${t.quote}\u0000${t.prefix ?? ""}\u0000${t.suffix ?? ""}`).join("\u0001"),
     [threads]
   );
 

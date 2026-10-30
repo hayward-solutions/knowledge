@@ -29,7 +29,7 @@ func (s *Store) InsertActivity(ctx context.Context, a domain.Activity) error {
 	return err
 }
 
-func (s *Store) ListSpaceActivity(ctx context.Context, spaceID, viewerID uuid.UUID, viewerIsAdmin bool, before *time.Time, limit int) ([]ActivityView, error) {
+func (s *Store) ListSpaceActivity(ctx context.Context, spaceID, viewerID uuid.UUID, viewerRole domain.Role, before *time.Time, limit int) ([]ActivityView, error) {
 	if limit <= 0 {
 		limit = 30
 	}
@@ -47,9 +47,14 @@ func (s *Store) ListSpaceActivity(ctx context.Context, spaceID, viewerID uuid.UU
 		 LEFT JOIN pages p ON p.id = a.page_id
 		 WHERE a.space_id = $1
 		   AND ($2::timestamptz IS NULL OR a.created_at < $2::timestamptz)
-		   AND (p.id IS NULL OR p.status <> 'draft' OR p.created_by = $3 OR $4::boolean)
+		   AND (a.page_id IS NULL OR (p.id IS NOT NULL AND CASE
+		        WHEN p.status = 'draft' THEN p.created_by = $3 OR $4::boolean
+		        WHEN p.status = 'trashed' AND p.version = 0 AND p.published_at IS NULL THEN p.created_by = $3 OR $4::boolean
+		        WHEN p.status = 'trashed' THEN $5::boolean
+		        ELSE TRUE
+		   END))
 		 ORDER BY a.created_at DESC, a.id DESC
-		 LIMIT $5`, spaceID, cursor, viewerID, viewerIsAdmin, limit)
+		 LIMIT $6`, spaceID, cursor, viewerID, viewerRole == domain.RoleAdmin, viewerRole.AtLeast(domain.RoleEditor), limit)
 	if err != nil {
 		return nil, err
 	}

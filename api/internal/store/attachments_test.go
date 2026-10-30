@@ -239,3 +239,38 @@ func TestListAttachmentObjectKeysUnderPage(t *testing.T) {
 		t.Fatalf("unknown page: %v %v", keys, err)
 	}
 }
+
+func TestListAttachmentObjectKeysUnderPageSurvivesCycle(t *testing.T) {
+	s := testutil.NewDB(t)
+	u := testutil.CreateUser(t, s, "cycle@example.test", "", false)
+	spaceID := testutil.CreateSpace(t, s, testutil.SpaceOpts{Key: "CYC", CreatedBy: u.ID})
+	a := testutil.CreatePage(t, s, spaceID, u.ID, "A")
+	b := testutil.CreatePage(t, s, spaceID, u.ID, "B")
+	setup := context.Background()
+	for _, q := range []struct{ id, parent uuid.UUID }{{b, a}, {a, b}} {
+		if _, err := s.Pool.Exec(setup, `UPDATE pages SET parent_id = $2 WHERE id = $1`, q.id, q.parent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	onA := newAttachment(a, spaceID, u.ID, "a.txt")
+	onB := newAttachment(b, spaceID, u.ID, "b.txt")
+	for _, att := range []*domain.Attachment{onA, onB} {
+		if err := s.CreateAttachment(setup, att); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(setup, 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	keys, err := s.ListAttachmentObjectKeysUnderPage(ctx, a)
+	if err != nil {
+		t.Fatalf("cycle: %v", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatalf("cycle walk took %v", time.Since(start))
+	}
+	if len(keys) != 2 || keys[0] != onA.S3Key || keys[1] != onB.S3Key {
+		t.Fatalf("keys %v", keys)
+	}
+}

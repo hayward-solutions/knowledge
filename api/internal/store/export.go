@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,6 +44,10 @@ func (s *Store) ListSpacePagesForExport(ctx context.Context, spaceID uuid.UUID) 
 	return out, rows.Err()
 }
 
+const ImportMaxPageDepth = 64
+
+var ErrImportTooDeep = errors.New("page tree is too deep")
+
 type ImportPage struct {
 	Parent      int
 	Title       string
@@ -58,9 +63,30 @@ func (s *Store) ImportPages(ctx context.Context, spaceID uuid.UUID, baseParent *
 		if err := pageLockSpace(ctx, tx, spaceID); err != nil {
 			return err
 		}
+		baseDepth := 0
 		if baseParent != nil {
 			if err := pageCheckParent(ctx, tx, spaceID, *baseParent); err != nil {
 				return err
+			}
+			if err := tx.QueryRow(ctx,
+				`WITH RECURSIVE anc(id) AS (
+				     SELECT $1::uuid
+				     UNION
+				     SELECT p.parent_id FROM pages p JOIN anc a ON p.id = a.id WHERE p.parent_id IS NOT NULL
+				 )
+				 SELECT count(*) FROM anc`, *baseParent).Scan(&baseDepth); err != nil {
+				return err
+			}
+		}
+		depths := make([]int, len(in))
+		for i, ip := range in {
+			d := baseDepth
+			if ip.Parent >= 0 && ip.Parent < i {
+				d = depths[ip.Parent]
+			}
+			depths[i] = d + 1
+			if depths[i] > ImportMaxPageDepth {
+				return ErrImportTooDeep
 			}
 		}
 		for _, ip := range in {

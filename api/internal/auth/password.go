@@ -25,7 +25,17 @@ const (
 	maxArgonTime    uint32 = 10
 	maxArgonThreads uint8  = 16
 	maxPasswordLen         = 256
+
+	maxConcurrentHashes = 4
 )
+
+var hashSlots = make(chan struct{}, maxConcurrentHashes)
+
+func idKey(password, salt []byte, t, m uint32, p uint8, keyLen uint32) []byte {
+	hashSlots <- struct{}{}
+	defer func() { <-hashSlots }()
+	return argon2.IDKey(password, salt, t, m, p, keyLen)
+}
 
 var (
 	ErrWeakPassword    = errors.New("password must be at least 12 characters and include upper, lower, digit, and symbol")
@@ -71,7 +81,7 @@ func hashRaw(password string) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	key := argon2.IDKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
+	key := idKey([]byte(password), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, argonMemory, argonTime, argonThreads,
 		base64.RawStdEncoding.EncodeToString(salt),
@@ -104,7 +114,7 @@ func VerifyPassword(password, encoded string) (bool, error) {
 	if err != nil || len(want) == 0 {
 		return false, ErrInvalidHash
 	}
-	got := argon2.IDKey([]byte(password), salt, t, m, p, uint32(len(want)))
+	got := idKey([]byte(password), salt, t, m, p, uint32(len(want)))
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }
 

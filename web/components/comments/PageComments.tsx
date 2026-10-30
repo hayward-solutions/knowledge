@@ -13,7 +13,7 @@ import { CommentComposer } from "./CommentComposer";
 import { CommentThread } from "./CommentThread";
 import { InlineCommentDialog } from "./InlineCommentDialog";
 import { InlineComments } from "./InlineComments";
-import { SelectionCommentButton } from "./SelectionCommentButton";
+import { SelectionCommentButton, type SelectionRequest } from "./SelectionCommentButton";
 import { scrollMarkIntoView } from "./anchors";
 import { countLive, isResolved } from "./commentUtils";
 import { commentsKey, useCommentActions, type CommentCtx } from "./useCommentActions";
@@ -48,7 +48,7 @@ export function PageComments({
   const [active, setActive] = useState<string | null>(activeCommentId ?? null);
   const internalRef = useRef<string | null>(null);
   const [showResolved, setShowResolved] = useState(false);
-  const [dialogQuote, setDialogQuote] = useState<string | null>(null);
+  const [dialogQuote, setDialogQuote] = useState<SelectionRequest | null>(null);
   const changeRef = useRef(onActiveCommentChange);
 
   useEffect(() => {
@@ -135,11 +135,15 @@ export function PageComments({
   );
 
   const submitInline = useCallback(
-    async (quote: string, value: EditorChange) => {
+    async (request: SelectionRequest, value: EditorChange) => {
       const created = await actions.create({
         body_json: value.json,
         body_html: value.html,
-        inline_anchor: { quoted_text: quote },
+        inline_anchor: {
+          quoted_text: request.quote,
+          ...(request.prefix ? { prefix: request.prefix } : {}),
+          ...(request.suffix ? { suffix: request.suffix } : {}),
+        },
       });
       if (created) {
         select(created.id);
@@ -271,7 +275,7 @@ export function PageComments({
 
       {dialogQuote !== null && (
         <InlineCommentDialog
-          quote={dialogQuote}
+          quote={dialogQuote.quote}
           onClose={() => setDialogQuote(null)}
           onSubmit={(value) => submitInline(dialogQuote, value)}
         />

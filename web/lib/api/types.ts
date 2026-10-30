@@ -139,6 +139,8 @@ export interface Label {
 
 export interface InlineAnchor {
   quoted_text: string;
+  prefix?: string;
+  suffix?: string;
 }
 
 export interface Comment {

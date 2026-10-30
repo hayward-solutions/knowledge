@@ -13,6 +13,16 @@ export class ApiError extends Error {
   }
 }
 
+export const UNAUTHENTICATED_EVENT = "kn:unauthenticated";
+
+const NO_REDIRECT_PATHS = ["/auth/login", "/auth/oidc"];
+
+export function notifyUnauthenticated(path: string): void {
+  if (typeof window === "undefined") return;
+  if (NO_REDIRECT_PATHS.some((p) => path.startsWith(p))) return;
+  window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT, { detail: { path } }));
+}
+
 export function apiUrl(path: string): string {
   if (/^https?:\/\//.test(path)) return path;
   if (path.startsWith("/api/")) return `${API_BASE}${path}`;
@@ -48,7 +58,10 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(headers || {}),
     },
   });
-  if (!res.ok) throw await toError(res);
+  if (!res.ok) {
+    if (res.status === 401) notifyUnauthenticated(path);
+    throw await toError(res);
+  }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
@@ -66,7 +79,10 @@ export async function apiUpload<T>(
     headers: { Accept: "application/json", ...(headers || {}) },
     body: formData,
   });
-  if (!res.ok) throw await toError(res);
+  if (!res.ok) {
+    if (res.status === 401) notifyUnauthenticated(path);
+    throw await toError(res);
+  }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }

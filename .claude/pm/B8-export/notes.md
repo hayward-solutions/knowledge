@@ -48,3 +48,15 @@ Pages are the caller-independent set of published pages (drafts and trashed excl
 ## Gate
 
 `cd api && gofmt -l . && go build ./... && go vet ./... && go test -count=1 ./...` passes (Docker running, no skips).
+
+## Security hardening (review P1-1, P2-6)
+
+Limits, all returning 400 unless noted: at most 100 `files` parts; directory depth at most 10 segments; directory segment at most 120 characters; filename at most 255 characters; whole path at most 4096 bytes (also checked as the part header is read); total planned pages (files that are not consumed as `index.md`, plus folders) at most 500; per-file size at most 2 MiB, or `ATTACHMENT_MAX_BYTES` if that is smaller (413); request body at most 32 MiB plus 1 MiB slack (413). `exportSplitPath` stops at the first violation without building the full segment list.
+
+Planner: folders are a trie of `(parentNode, segment)` ids built in one pass over the files; `folder()` walks up to the nearest already-planned ancestor and then creates the missing chain top-down in a loop (no recursion, no per-level joined key; the folder path string is built once per created folder for the version message only).
+
+Conversion: before converting, `content.CheckMarkdownComplexity` rejects more than 20000 lines or more than 32 levels of nested blockquote/list markers on any line (a cheap per-line prefix scan). Conversion then runs in a goroutine behind a 4-slot semaphore (so abandoned goroutines cannot pile up) with a 5 s deadline: timeout or complexity gives 400 `file too complex: <name>`, other conversion errors give 400 `unsupported markdown structure`, slot starvation gives 503, and a cancelled request context aborts between files and during conversion. A timed-out conversion keeps running until goldmark returns; it only holds its semaphore slot.
+
+Tree depth: `Store.ImportPages` computes the base parent's depth with a cycle-safe `UNION` CTE and rejects the batch with `store.ErrImportTooDeep` (400 `page tree is too deep`) before inserting anything when any planned page would exceed `store.ImportMaxPageDepth` (64).
+
+Tests: `TestImportHardLimits` (11-level and 20000-level paths, long segment, long filename, 2 MiB+1 file, 200-level blockquote, deep list, 20001 lines, 101 files, page cap; each must also answer within 3 s), `TestImportTreeDepthCap` (parent at depth 61, rejected import leaves no pages), `TestCheckMarkdownComplexity`.

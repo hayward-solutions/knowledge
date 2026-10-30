@@ -58,3 +58,7 @@ Last full run: everything above passes except `TestAttachmentFilenameSanitising`
 - Reply depth: root is depth 0, a direct reply depth 1, reply to a reply depth 2; a reply whose depth would exceed 2 gets 400 `reply nesting too deep`. Depth comes from the new store method `GetCommentDepth(ctx, id)` (recursive CTE up the `parent_id` chain). Siblings at allowed levels are unaffected.
 - Tests added or changed in `handlers/comments_test.go`: `TestCommentTrashedPage` (viewer 404 on read and writes, editor/space admin/system admin can read), `TestCommentWritesOnTrashedPageConflict` (409 body for all five writes), `TestCommentReplyNestingCap`. The private-space non-member test now expects 404, matching the shared middleware change made by someone else mid-task.
 - Full gate rerun: gofmt clean, build, vet and `go test -count=1 ./...` all pass.
+
+## Inline anchor context extension
+
+- `inline_anchor` is now `{quoted_text, prefix?, suffix?}`. `prefix` and `suffix` are trimmed and capped at 64 runes each (400 `invalid inline anchor` above that). Empty-after-trim values are omitted from the stored JSON; non-empty ones are stored and returned as given (trimmed). No migration (jsonb). Test: `TestCommentInlineAnchorContext`.
