@@ -86,3 +86,21 @@ Repo
 - Notifications and activity rows for purged pages remain (no FK), links from them 404.
 - Inline comment from inside the editor (bubble "Comment" button) is not wired on the edit page (`onRequestComment` unused); inline comments are created from the published view, which is what the suite covers.
 - RustFS and aws-cli are pinned to tags that exist today; bump them deliberately.
+
+## Final verification after review remediation
+
+Run on the real `docker-compose.yml` with default ports (8080/3000/5432/9000/9001 free), `.env` copied from `.env.example`, `docker compose down -v` then `up -d --build --wait`, then `cd web && npx playwright test`. Result: `59 passed (52.8s)`, no flaky, no failures, space key `ENG`. (The count is 59, not 60: two 08 tests were merged, see below.) `.env` removed and the stack taken down with `docker compose down -v` afterwards.
+
+Failures the remediation exposed (all test-side; no product code changed in this pass):
+- `08-admin-and-account` hit `429 too many requests` on a UI login. The new per-email login limiter (burst 5, 12 s refill) and the per-IP limiter (burst 10, 6 s refill) are exhausted by the suite's logins. Fixes, all in e2e only:
+  - `e2e/08-admin-and-account.spec.ts`: the disable/enable check now uses a throwaway user created through the API instead of re-using the Linus Torvalds account (saves a failed login on that email); the "non-admin cannot open the admin console" test is merged into the account test and reuses its session, so the account makes 3 login-limited calls (wrong password, reset-password login, post-reset login) plus the password change.
+  - `e2e/support/ui.ts`: new `userContext(browser, email, password)` logs a user in once and re-uses the saved storage state for later contexts.
+  - `e2e/04-notifications.spec.ts`: uses `userContext`, so the second user logs in once instead of three times.
+- Nothing else failed: private-space 404, trashed-page 404/409 behaviour, trash requiring editor, new modal portals, mobile drawer, NotificationsProvider SSE bell, inline comments with prefix/suffix, and the hardened `safeNext` all passed the existing specs unchanged.
+
+Other checks
+- `docker run -d --read-only --user 65532:65532 --tmpfs /tmp` on the rebuilt api image (Go 1.26 builder): `/health` ok, `server healthcheck` exits 0, object storage connects. Compose api container: user `nonroot`, `ReadonlyRootfs=true`. Web image with `--read-only --user 1000 --tmpfs /app/.next/cache`: `/login` 200.
+- `docker buildx build --platform linux/amd64` succeeded for both `api` and `web` (emulated on this Apple Silicon host; images report architecture `amd64`). linux/arm64 builds were native and succeeded in the earlier pass. Temporary tags removed.
+- Gates: `gofmt -l .` empty, `go build`, `go vet`, `go test -count=1 ./...` all ok; `npm run lint` clean, `npm run typecheck` exit 0, `npm run build` ok.
+
+Still failing: nothing. Remaining caveats are unchanged from the section above (the editor-page 404 console noise when the API is on a different origin, and the P3 list).

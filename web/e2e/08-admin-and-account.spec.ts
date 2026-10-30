@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { ADMIN_STATE } from "./support/env";
-import { adminApi, createPublishedPage, ensureSpace, setLabels } from "./support/api";
+import { adminApi, createPublishedPage, createUser, ensureSpace, setLabels } from "./support/api";
 import { run, spaceKey } from "./support/run";
 import { uiLogin } from "./support/ui";
 
@@ -58,24 +58,35 @@ test.describe.serial("admin console and account settings", () => {
     await page.getByRole("row").filter({ hasText: u.email }).getByRole("checkbox").click();
     await expect(page.getByRole("row").filter({ hasText: u.email }).getByRole("checkbox")).not.toBeChecked();
 
-    await page.getByRole("row").filter({ hasText: u.email }).getByRole("button", { name: "Disable" }).click();
+    const api = await adminApi();
+    const spare = {
+      name: `Spare Account ${run().runId}`,
+      email: `spare.${run().runId}@example.com`,
+      password: "Spare-Account-Pass-1!",
+    };
+    await createUser(api, spare.email, spare.name, spare.password);
+    await api.dispose();
+
+    await page.reload();
+    const spareRow = page.getByRole("row").filter({ hasText: spare.email });
+    await spareRow.getByRole("button", { name: "Disable" }).click();
     await page.getByRole("dialog", { name: "Disable user" }).getByRole("button", { name: "Disable" }).click();
-    await expect(page.getByRole("row").filter({ hasText: u.email }).getByText("Disabled")).toBeVisible();
+    await expect(spareRow.getByText("Disabled")).toBeVisible();
 
     const ctx = await browser.newContext();
     const other = await ctx.newPage();
     await other.goto("/login");
-    await other.getByLabel("Email").fill(u.email);
-    await other.getByLabel("Password").fill(u.resetPassword);
+    await other.getByLabel("Email").fill(spare.email);
+    await other.getByLabel("Password").fill(spare.password);
     await other.getByRole("button", { name: "Sign in" }).click();
     await expect(other.getByRole("alert")).toBeVisible();
     await ctx.close();
 
-    await page.getByRole("row").filter({ hasText: u.email }).getByRole("button", { name: "Enable" }).click();
-    await expect(page.getByRole("row").filter({ hasText: u.email }).getByText("Active")).toBeVisible();
+    await spareRow.getByRole("button", { name: "Enable" }).click();
+    await expect(spareRow.getByText("Active")).toBeVisible();
   });
 
-  test("a user can change their display name and password from the account page", async ({ browser }) => {
+  test("a user can change their display name and password, and is kept out of the admin console", async ({ browser }) => {
     const u = user();
     const ctx = await browser.newContext();
     const page = await ctx.newPage();
@@ -92,6 +103,9 @@ test.describe.serial("admin console and account settings", () => {
     await page.getByLabel("Confirm new password").fill(u.accountPassword);
     await page.getByRole("button", { name: "Change password" }).click();
     await expect(page.getByText(/password (changed|updated)/i).first()).toBeVisible();
+
+    await page.goto("/admin/users");
+    await expect(page.getByRole("button", { name: "New user" })).toHaveCount(0);
     await ctx.close();
 
     const api = await adminApi();
@@ -119,15 +133,5 @@ test.describe.serial("admin console and account settings", () => {
     await page.goto("/admin/labels");
     await expect(page.getByRole("heading", { name: "Labels" })).toBeVisible();
     await expect(page.getByRole("row").filter({ hasText: `admin-${run().runId}` })).toBeVisible();
-  });
-
-  test("non-admin users cannot open the admin console", async ({ browser }) => {
-    const u = user();
-    const ctx = await browser.newContext();
-    const page = await ctx.newPage();
-    await uiLogin(page, u.email, u.accountPassword);
-    await page.goto("/admin/users");
-    await expect(page.getByRole("button", { name: "New user" })).toHaveCount(0);
-    await ctx.close();
   });
 });

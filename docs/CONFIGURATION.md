@@ -25,7 +25,9 @@ Attachments are proxied through the API in both directions. The browser never ta
 
 ## Environment variables
 
-Configuration is read from the `.env` file consumed by `docker-compose.yml`; every variable has a default in the compose file, so `.env` only needs the values you change. `.env.example` is a copy-pasteable starting point. Variable names are identical to Backlog's, plus `COOKIE_SECURE` and `ATTACHMENT_MAX_BYTES`.
+Configuration is read from the `.env` file consumed by `docker-compose.yml`; every variable has a default in the compose file, so `.env` only needs the values you change. `.env.example` is a copy-pasteable starting point. Variable names are identical to Backlog's, plus `COOKIE_SECURE`, `ATTACHMENT_MAX_BYTES`, `TRUSTED_PROXIES`, and `OIDC_REQUIRE_EMAIL_VERIFIED`.
+
+`docker-compose.yml` forwards only the variables in the tables below that have a Compose default; `TRUSTED_PROXIES` and `OIDC_REQUIRE_EMAIL_VERIFIED` are not forwarded, so to use them with Compose add them to the `api` service's `environment` block. Outside Compose, export them like any other variable.
 
 Two defaults are listed per variable. **Code default** is what the API uses when the variable is unset (for example when you run it outside Compose). **Compose default** is what `docker-compose.yml` passes when `.env` does not set it.
 
@@ -47,6 +49,7 @@ Two defaults are listed per variable. **Code default** is what the API uses when
 | `PUBLIC_BASE_URL` | Public URL of the web app (a trailing slash is trimmed). The OIDC callback redirects the browser here, so it is required for SSO. | empty | `http://localhost:3000` |
 | `APP_ORIGINS` | Comma-separated CORS origin allowlist (exact origins). Only needed when the browser calls the API from a different origin than the page. | none | `http://localhost:3000` |
 | `COOKIE_SECURE` | Set the `Secure` flag on the `sid` session cookie and the short-lived OIDC cookies. `true` behind HTTPS. | `false` | `false` |
+| `TRUSTED_PROXIES` | Comma-separated IPs or CIDRs of the reverse proxies allowed to set `X-Forwarded-For` / `X-Real-IP`. Empty means those headers are never honoured and the TCP peer address is used for rate limiting and request logs. A bare IP means /32 (or /128). An invalid entry makes the API exit at start. See [Rate limiting and proxies](#rate-limiting-and-proxies). | empty | not forwarded |
 | `NEXT_PUBLIC_API_BASE_URL` | Where the browser calls the API. A **web build argument**, baked into the JavaScript bundle and the Content-Security-Policy. Empty means same origin (`/api/v1/...`). | empty | `http://localhost:8080` |
 | `VERSION` | Build argument for both images. Shown at `GET /health` (`version`) and in the account menu. | `dev` | `dev` |
 | `ADMIN_EMAIL` | First-boot admin bootstrap email. | empty (bootstrap skipped) | `admin@example.com` |
@@ -92,6 +95,7 @@ Leave all `OIDC_*` unset to disable SSO and keep password-only login. See [OIDC 
 | `OIDC_EMAIL_CLAIM` | Claim carrying the user's email. | `email` | `email` |
 | `OIDC_NAME_CLAIM` | Claim carrying the display name. Falls back to the email. | `name` | `name` |
 | `OIDC_PROVIDER_NAME` | Label on the "Sign in with ..." button. | `SSO` | `SSO` |
+| `OIDC_REQUIRE_EMAIL_VERIFIED` | Only link an SSO login to an existing local account (matched by email) when the IdP says the email is verified. Accepts `1`, `true`, `yes`, `on` for true; any other non-empty value is false. | `true` | not forwarded |
 
 If any of `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URL` is set, all four are required and the API exits at start otherwise. It also exits if the issuer cannot be reached for discovery.
 
@@ -132,14 +136,15 @@ OIDC_PROVIDER_NAME=Cognito
 
 ### How accounts are provisioned
 
-- A login is matched first by the IdP identity (`issuer` plus `sub`). If there is none, it is matched by **email** to an existing user, and the identity is linked to that user. Otherwise a new user is created with no local password. The API does not check an `email_verified` claim, so only point it at an IdP that verifies email addresses.
+- A login is matched first by the IdP identity (`issuer` plus `sub`). If there is none, it is matched by **email** to an existing user, and the identity is linked to that user. Otherwise a new user is created with no local password.
+- **Email verification.** Linking by email requires the ID token's `email_verified` claim to be `true` (a boolean, or the string `"true"` that Cognito sends). If the ID token has no `email_verified` key, the userinfo endpoint is asked. When the claim is false or missing, nothing is written (no identity, no session) and the callback answers `403` with a "Sign-in blocked" page that links back to `/login`. Signing in with an identity that is already linked, and creating a brand-new account, do not need a verified email. Set `OIDC_REQUIRE_EMAIL_VERIFIED=false` to restore link-by-unverified-email, which is only safe when the IdP guarantees the address.
 - The display name is refreshed from `OIDC_NAME_CLAIM` on each login. The email is refreshed too, unless another user already has it.
 - SSO-only users cannot use password login (`invalid credentials`) and cannot change a password (`this account has no local password`). A disabled user is turned away at the callback.
 - New SSO users get no space memberships. They see `internal` spaces as viewers and need to be added to private ones.
 
 ### Admin group mapping
 
-When `OIDC_ADMIN_GROUP` is set, group membership is authoritative on **every** SSO login: a user whose `OIDC_GROUPS_CLAIM` contains the group becomes a system admin, and a user who does not is demoted. This path does not apply the last-admin guard, so an existing admin who is linked to an SSO identity and is missing from the group loses admin at the next SSO sign-in.
+When `OIDC_ADMIN_GROUP` is set, group membership is authoritative on **every** SSO login: a user whose `OIDC_GROUPS_CLAIM` contains the group becomes a system admin, and a user who does not is demoted. The mapping never demotes the **last active system admin**: if the demotion would leave none, the flag is kept and the API logs `oidc admin-group mapping would demote the last active system admin ...`. The check runs under the same Postgres advisory lock as the admin console's demote and disable actions, so concurrent demotions cannot leave zero admins. Any other admin who is linked to an SSO identity and missing from the group loses admin at their next SSO sign-in.
 
 When `OIDC_ADMIN_GROUP` is **unset**, SSO logins never change `is_system_admin`: they do not promote, and they do **not demote**. The bootstrap admin and anyone promoted in the admin console keep their role even if they sign in through SSO. (Backlog demotes everyone in this case; Knowledge does not.)
 
@@ -149,10 +154,22 @@ When `OIDC_ADMIN_GROUP` is **unset**, SSO logins never change `is_system_admin`:
 
 - The session cookie is `sid`: `HttpOnly`, `SameSite=Lax`, `Path=/`, valid for 30 days, holding a random token whose SHA-256 is the session row id. Expired sessions are deleted hourly. Disabling a user invalidates their sessions at the next request.
 - Set `COOKIE_SECURE=true` whenever the site is served over HTTPS; the browser then refuses to send `sid` over plain HTTP. Over plain HTTP leave it `false`, or the browser drops the cookie and login appears to succeed but the session is lost.
-- The OIDC flow sets short-lived (10 minute) `oidc_state`, `oidc_nonce`, and `oidc_next` cookies with the same flags. `next` is only honoured for relative paths.
+- The OIDC flow sets short-lived (10 minute) `oidc_state`, `oidc_nonce`, and `oidc_next` cookies with the same flags. `next` is only honoured as a plain relative path: it must start with a single `/`, be at most 2048 bytes, and contain no control characters, backslashes, scheme, host, or userinfo.
 - Same origin is the simplest setup: when the page and the API share a hostname (the cluster layout), no CORS configuration is involved. With separate origins, list the page origin in `APP_ORIGINS`; the API then allows credentialed requests from exactly those origins, with the `Content-Type` header and methods `GET, POST, PUT, PATCH, DELETE, OPTIONS`.
-- Login and change-password share a per-IP limiter (burst 10, 10 per minute). The IP comes from `RemoteAddr` after `X-Forwarded-For` / `X-Real-IP` processing, so run the API behind a proxy that overwrites those headers.
+- Changing a password (`POST /auth/change-password`) deletes every other session of that user and keeps the current one. An admin password reset deletes all of the user's sessions. The web app sends a user whose session disappeared back to `/login`.
 - The web app sends `Content-Security-Policy` (`default-src 'self'`, with `connect-src` and `img-src` extended by `NEXT_PUBLIC_API_BASE_URL`), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, a strict `Referrer-Policy`, and a restrictive `Permissions-Policy`. `unsafe-eval` is added only by `next dev`.
+
+### Rate limiting and proxies
+
+Login and change-password are throttled twice, in memory per API process (see [API.md](API.md#rate-limits)): per client IP (burst 10, 10 per minute) and per account email (burst 5, 5 per minute).
+
+- **The per-email limit locks out the real owner as well.** Every attempt costs a token, right or wrong, and the check runs before the password is hashed. Five bad attempts in a minute mean even the correct password answers `429 too many requests` until a token refills (one every 12 seconds). This is the accepted trade-off against online guessing; it also bounds argon2 work, since at most four hashes run concurrently.
+- **`TRUSTED_PROXIES` decides what "client IP" means.** With it empty, `X-Forwarded-For` and `X-Real-IP` are ignored and the peer address is used, so a client cannot dodge the per-IP limit by sending a header. That is correct when browsers reach the API directly (local Compose), but behind a reverse proxy or ingress every user then shares the proxy's address and its single bucket. Set `TRUSTED_PROXIES` to the proxy's address range (on pi-lab, the pods that run the Tailscale ingress proxy) so the API reads the client from `X-Forwarded-For`: when the peer is in the list, the client is the right-most `X-Forwarded-For` entry that is not itself in the list, or `X-Real-IP` if there is no `X-Forwarded-For`. A malformed or oversized (over 4096 bytes) header leaves the peer address in place.
+- **Only list addresses you control.** Anyone able to connect from a trusted range can claim any client IP. Do not trust a broad range such as a whole LAN.
+
+### Server timeouts and database limits
+
+The API sets `ReadHeaderTimeout` 10 s, `ReadTimeout` 60 s, `IdleTimeout` 120 s, `MaxHeaderBytes` 64 KiB, and no write timeout (downloads and the SSE stream stay open). `POST .../attachments` and `POST .../import` get a 5 minute read deadline and a 5 minute context timeout instead of 60 s, so slow large uploads can finish. Every pooled Postgres connection runs with `statement_timeout = 30s`. A reverse proxy in front must allow at least these durations and must not buffer SSE.
 
 ---
 
@@ -199,7 +216,9 @@ Comment editing is author-only for everyone, system admins included. A space mus
 - **Archived**: readable by everyone who could read it; writable only by space and system admins. Editors see a read-only banner and the API answers `403 space is read-only` to their writes.
 - **Soft-deleted**: `404` for everyone except system admins. The key stays reserved.
 - **Draft pages** (created but never published): visible only to their creator and space admins, in the tree, search, dashboard, comments, labels, attachments, and notifications.
-- **Trashed pages**: visible to editors and admins in the trash view and by direct link; hidden from viewers. A never-published page that was trashed stays visible only to its creator and space admins.
+- **Trashed pages**: visible to editors and admins in the trash view and by direct link; hidden from viewers on the page, its versions, comments, labels, attachments, and activity. A never-published page that was trashed stays visible only to its creator and space admins. The space home page can be neither trashed nor moved, directly or by trashing an ancestor.
+- **Page tree depth** is capped at 64 levels (create, copy, move, restore, and import all refuse to go deeper).
+- **Activity feed**: a row is shown only while its page still exists and is visible to the viewer by the rules above; rows about purged pages are never shown.
 
 ---
 
@@ -258,7 +277,7 @@ func main() {
 }
 EOF
 go mod init hashgen
-go get golang.org/x/crypto@v0.55.0
+go get golang.org/x/crypto@v0.58.0
 go run . 'A-New-Passw0rd-123!'
 ```
 
@@ -297,4 +316,5 @@ A manual smoke test to run against a fresh install and confirm everything is wir
 15. **More actions** then **Move to trash**. Open the space **Trash**, **Restore** the page, and confirm Alice (an editor) sees it again.
 16. Change the space visibility to **internal** and, as a user who is not a member, confirm the space is readable but has no edit controls. **Archive** it and confirm Alice can no longer edit; **Unarchive** it.
 17. In **Members**, demote the only admin: the request is refused with `last_admin` and a toast says a space must keep an admin.
-18. Restart the API (`docker compose restart api`): both sessions stay signed in (sessions are stored in Postgres), and the log shows `admin bootstrap skipped: users already exist`.
+18. As Alice, change her password in **Account** while signed in on two browsers: the other browser is signed out at its next request and returns to `/login`.
+19. Restart the API (`docker compose restart api`): both sessions stay signed in (sessions are stored in Postgres), and the log shows `admin bootstrap skipped: users already exist`.

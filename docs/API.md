@@ -1,6 +1,6 @@
 # API Reference
 
-All endpoints are mounted under `/api/v1`, except `GET /health`. Authentication is a session cookie (`sid`) set by `/auth/login` (or the OIDC callback); send it with `credentials: "include"`. Bodies and responses are JSON with snake_case fields, except where an endpoint says it streams bytes or multipart.
+All endpoints are mounted under `/api/v1`, except `GET /health`. Authentication is a session cookie (`sid`) set by `/auth/login` (or the OIDC callback); send it with `credentials: "include"`. Bodies and responses are JSON with snake_case fields, except where an endpoint says it streams bytes or multipart. Server timeouts and size limits are under [Limits and timeouts](#limits-and-timeouts).
 
 All IDs are UUIDv7. Timestamps are RFC 3339 UTC. JSON request bodies are capped at 1 MiB. Response shapes are named after the TypeScript types in [`web/lib/api/types.ts`](../web/lib/api/types.ts) (`Space`, `PageDetail`, `Comment`, and so on); that file is the client contract.
 
@@ -40,8 +40,9 @@ Rules on top of the matrix:
 
 - **Archived spaces** are read-only for everyone except space and system admins. Any permission other than `view_space` answers `403 {"error":"space is read-only"}` for an editor or viewer, comments included. Starring, watching, and exporting still work.
 - **Soft-deleted spaces** answer `404` to everyone except system admins.
-- **Draft pages** (never published) answer `404` to everyone except the creator and space admins, on every page, version, comment, label, attachment, watch, and export route.
-- **Trashed pages** answer `404` to viewers; editors and admins can read them. A never-published page that was trashed stays visible only to its creator and space admins.
+- **Private spaces** answer `404` to everyone who is not a member or a system admin, for the space and for every page, comment, attachment, template, and watch target inside it. The response is the same as for an id that does not exist.
+- **Draft pages** (never published) answer `404` to everyone except the creator and space admins, on every page, version, comment, label, attachment, watch, export, and activity route.
+- **Trashed pages** answer `404` to viewers on every one of those routes; editors and admins can read them. A never-published page that was trashed stays visible only to its creator and space admins.
 
 ---
 
@@ -60,8 +61,8 @@ Errors are `{"error": "message"}`. A `code` field is added only to the cases bel
 | 409 | `page_trashed` | A write to a page that is in the trash: publish, draft, patch, move, copy, trash, presence, labels, comments, attachments. Restore it first. |
 | 409 | `last_admin` | Removing or demoting the last `admin` member of a space (`PUT` or `DELETE` on `/spaces/{key}/members/{userID}`). |
 | 409 | | Other conflicts, without a code: email already in use, space key already in use, disabled user added to a space, and removing or disabling the last active system administrator (`cannot remove the last active system administrator`). |
-| 413 | | Request too large. Attachment upload: `file too large` (cap is `ATTACHMENT_MAX_BYTES`, default 25 MiB). Markdown import: `file too large: <name>` or `upload too large`. JSON bodies over 1 MiB on pages and templates: `request body too large` (other handlers answer `400 bad body`). |
-| 429 | | Auth rate limit hit on `/auth/login` or `/auth/change-password`: burst 10 per IP, refilling 10 per minute. `Retry-After: 60`. |
+| 413 | | Request too large. Attachment upload: `file too large` (cap is `ATTACHMENT_MAX_BYTES`, default 25 MiB). Markdown import: `file too large` (a file over 2 MiB or `ATTACHMENT_MAX_BYTES` if smaller) or `upload too large` (body over 32 MiB); see [Import limits](#import-limits). JSON bodies over 1 MiB on pages and templates: `request body too large` (other handlers answer `400 bad body`). |
+| 429 | | Auth rate limit hit on `/auth/login` or `/auth/change-password`: per client IP (burst 10, refilling 10 per minute) or per account email (burst 5, refilling 5 per minute). `Retry-After: 60`. See [Rate limits](#rate-limits). |
 | 503 | | `object storage not configured`: `STORAGE_S3_BUCKET` is unset. Affects attachment upload, download, and inline content only. |
 
 Middleware errors use the same envelope, so a `401` from a missing cookie is `{"error":"unauthenticated"}`.
@@ -72,14 +73,14 @@ Middleware errors use the same envelope, so a `401` from a missing cookie is `{"
 
 | Method | Path | Access | Body / Notes |
 |---|---|---|---|
-| POST | `/auth/login` | public | `{email, password}`. Sets the `sid` cookie and returns `User`. Rate-limited. SSO-only accounts (no local password) answer `401 invalid credentials`. |
+| POST | `/auth/login` | public | `{email, password}`. Sets the `sid` cookie and returns `User`. Rate-limited per IP and per email (every attempt, successful or not, uses a token of the email's bucket). SSO-only accounts (no local password) answer `401 invalid credentials`. |
 | POST | `/auth/logout` | optional session | Deletes the session and clears the cookie. Always `204`. |
 | GET | `/auth/me` | auth | Returns `User`. |
 | PATCH | `/auth/me` | auth | `{email?, display_name?}`. Returns `User`. `409` if the email is taken. Display name 1-200 characters. |
-| POST | `/auth/change-password` | auth | `{current_password, new_password}`. `204`. Rate-limited. `401` if the current password is wrong; `400` for a weak new password or an SSO-only account. |
+| POST | `/auth/change-password` | auth | `{current_password, new_password}`. `204`. Rate-limited per IP and per the caller's email. On success **every other session of the user is deleted**; the session that made the call stays signed in. `401` if the current password is wrong; `400` for a weak new password or an SSO-only account. |
 | GET | `/auth/oidc/config` | public | Returns `OIDCConfig`: `{enabled: false}` or `{enabled: true, provider_name}`. |
-| GET | `/auth/oidc/login` | public | `?next=/relative/path`. Redirects `302` to the IdP. `404` when OIDC is disabled. |
-| GET | `/auth/oidc/callback` | public | Completes login, sets `sid`, and redirects to `PUBLIC_BASE_URL` plus `next` (default `/`). Failures redirect to `/login?error=<reason>`. |
+| GET | `/auth/oidc/login` | public | `?next=/relative/path`. Redirects `302` to the IdP. `404` when OIDC is disabled. `next` is kept only if it is a plain relative path: it must start with a single `/`, be at most 2048 bytes, and contain no control characters, backslashes, scheme, host, or userinfo; otherwise it is ignored and the user lands on `/`. |
+| GET | `/auth/oidc/callback` | public | Completes login, sets `sid`, and redirects to `PUBLIC_BASE_URL` plus `next` (default `/`). Failures redirect to `/login?error=<reason>`. When the IdP's email is not verified and would have to be linked to an existing local account, it answers `403` with an HTML "Sign-in blocked" page instead (see `OIDC_REQUIRE_EMAIL_VERIFIED` in [CONFIGURATION.md](CONFIGURATION.md#how-accounts-are-provisioned)). |
 
 Password policy (everywhere a password is set): at least 12 characters, with an upper-case letter, a lower-case letter, a digit, and a symbol; at most 256 bytes.
 
@@ -131,10 +132,10 @@ Key rules: 2 to 10 characters, starting with a letter, then letters or digits; i
 | GET | `/pages/{pageID}/draft` | space:edit_pages | Returns the caller's `PageDraft`, or `404` if there is none. |
 | DELETE | `/pages/{pageID}/draft` | space:edit_pages | Discards the caller's draft. `204`. |
 | POST | `/pages/{pageID}/publish` | space:edit_pages | `PublishInput`: `{title, content_json, content_html, base_version, message?, force?}`. Returns `Page`. See [Publishing](#publishing-and-conflicts). |
-| POST | `/pages/{pageID}/move` | space:edit_pages | `MovePageInput`: `{parent_id, after_id?, position?}`. `parent_id: null` moves to the space root. `after_id` (a sibling under the new parent) wins over `position`; with neither the page is appended. Returns `Page`. `400` for a parent outside the space, a trashed parent, a cycle, or a non-sibling `after_id`. |
-| POST | `/pages/{pageID}/trash` | space:edit_pages | Trashes the page and every descendant. `204`. `400` for the space home page. |
-| POST | `/pages/{pageID}/restore` | space:edit_pages | Restores the page and the descendants trashed with it. Returns `Page`. If the old parent is trashed it goes under the home page. Pages never published return as `draft`. `400` if not trashed. |
-| POST | `/pages/{pageID}/copy` | space:edit_pages | Optional body `{title?, parent_id?}`. Copies the content into a new draft-status page in the same space, titled `Copy of <title>` by default. `201` `Page`. |
+| POST | `/pages/{pageID}/move` | space:edit_pages | `MovePageInput`: `{parent_id, after_id?, position?}`. `parent_id: null` moves to the space root. `after_id` (a sibling under the new parent) wins over `position`; with neither the page is appended. Returns `Page`. `400` for a parent outside the space, a trashed parent, a cycle, a non-sibling `after_id`, a move that would make the tree deeper than 64 levels (`page tree too deep`), or the space home page (`the space home page cannot be trashed or moved`). |
+| POST | `/pages/{pageID}/trash` | space:edit_pages | Trashes the page and every descendant. `204`. `400` if the space home page is the page or anywhere in its subtree (`the space home page cannot be trashed or moved`). |
+| POST | `/pages/{pageID}/restore` | space:edit_pages | Restores the page and the descendants trashed with it. Returns `Page`. If the old parent is trashed it goes under the home page. Pages never published return as `draft`. `400` if not trashed or if restoring would exceed the 64-level depth cap. |
+| POST | `/pages/{pageID}/copy` | space:edit_pages | Optional body `{title?, parent_id?}`. Copies the content into a new draft-status page in the same space, titled `Copy of <title>` by default. `201` `Page`. `400 page tree too deep` past 64 levels. |
 | GET | `/pages/{pageID}/children` | space:view_space | Returns `PageSummary[]` in position order. |
 | POST | `/pages/{pageID}/star` | space:view_space | `204`. |
 | DELETE | `/pages/{pageID}/star` | space:view_space | `204`. |
@@ -176,7 +177,7 @@ If `base_version` differs from the page's current `version`, and `force` is not 
 | Method | Path | Access | Body / Notes |
 |---|---|---|---|
 | GET | `/pages/{pageID}/comments` | space:view_space | Returns `Comment[]`: top-level threads with nested `replies`, oldest first, inline and page comments together. A deleted comment that still has replies is kept with an empty body and `deleted_at` set. |
-| POST | `/pages/{pageID}/comments` | space:comment | `CommentInput`: `{body_json, body_html, parent_id?, inline_anchor?}`. `201` `Comment`. The body must contain text. `inline_anchor` is `{quoted_text}` (1 to 2000 characters) and is allowed on top-level comments only. The returned `id` is what the editor stores in the `comment` mark. |
+| POST | `/pages/{pageID}/comments` | space:comment | `CommentInput`: `{body_json, body_html, parent_id?, inline_anchor?}`. `201` `Comment`. The body must contain text. `inline_anchor` is `{quoted_text, prefix?, suffix?}` and is allowed on top-level comments only: `quoted_text` is 1 to 2000 characters, and `prefix` and `suffix` are up to 64 characters each of the text before and after the quote, used to pick the right occurrence when the quote repeats (empty values are not stored). The returned `id` is what the editor stores in the `comment` mark. |
 | PATCH | `/comments/{commentID}` | space:comment | `{body_json, body_html}`. Author only (`403` for anyone else, system admins included). Returns `Comment`. |
 | DELETE | `/comments/{commentID}` | space:comment | Soft delete. The author or a space admin; `403` otherwise. Idempotent `204`. |
 | POST | `/comments/{commentID}/resolve` | space:comment | Top-level comments only (`400` for a reply). Returns `Comment`. |
@@ -257,13 +258,13 @@ The caller must be able to see the target; otherwise `404` for all three. A bad 
 | POST | `/notifications/read` | auth | `{ids: string[]}` (at most 500) or `{all: true}`. `204`. `400` if neither is given. |
 | GET | `/notifications/stream` | auth | Server-Sent Events. See [Notification stream](#notification-stream). |
 
-Notification `type` values: `page.published`, `page.mentioned`, `comment.created`, `comment.replied`, `comment.mentioned`, `comment.resolved`, `space.added`. Every `payload` has `actor_name`; most also have `page_title`, `page_slug`, and `space_key`. A user is notified at most once per event and never for their own actions. Recipients must be active and able to access the space; for a draft page only its creator and space admins are notified.
+Notification `type` values: `page.published`, `page.mentioned`, `comment.created`, `comment.replied`, `comment.mentioned`, `comment.resolved`, `space.added`. Every `payload` has `actor_name`; most also have `page_title`, `page_slug`, and `space_key`. A user is notified at most once per event and never for their own actions. Recipients must be active and able to access the space; for a draft page only its creator and space admins are notified. `page.mentioned` fires only for users newly mentioned by that publish (mentions already in the previous version do not repeat), and not again while the user still has an unread `page.mentioned` for the same page.
 
 ## Activity and dashboard
 
 | Method | Path | Access | Notes |
 |---|---|---|---|
-| GET | `/spaces/{key}/activity` | space:view_space | `?before=&limit=`. Returns `Activity[]`, newest first. `type` is `page.published`, `page.moved`, `page.trashed`, `page.restored`, or `comment.created`. Rows about a draft page are hidden from everyone except its creator and space admins. See [Cursor pagination](#cursor-pagination). |
+| GET | `/spaces/{key}/activity` | space:view_space | `?before=&limit=`. Returns `Activity[]`, newest first. `type` is `page.published`, `page.moved`, `page.trashed`, `page.restored`, or `comment.created`. Rows about a page are returned only while the page still exists and is visible to the caller: draft pages and never-published trashed pages only to their creator and space admins, other trashed pages only to editors and admins, and rows about purged pages never. See [Cursor pagination](#cursor-pagination). |
 | GET | `/me/dashboard` | auth | Returns `Dashboard`: `recent_updates` (20), `recently_viewed` (10), `my_drafts` (20), and `starred` (20). Each item is a `DashboardPage`. Sections are never null. |
 
 ## Export and import
@@ -274,7 +275,29 @@ Notification `type` values: `page.published`, `page.mentioned`, `comment.created
 | GET | `/spaces/{key}/export` | space:view_space | `application/zip` named `<KEY>-export.zip`: the published pages as Markdown, a page with children becoming `<slug>/index.md` plus its children, and a `README.md` link list. Drafts and trashed pages are excluded. |
 | POST | `/spaces/{key}/import` | space:edit_pages | `multipart/form-data` with one or more `files` parts and an optional `parent_id` field (default: the space home page). Returns `201` `ImportResult` `{pages: PageSummary[]}`. |
 
-Import rules: only `.md` and `.markdown` files are accepted, and any other file rejects the whole request with `400`. At most 200 files. Each file is capped at `ATTACHMENT_MAX_BYTES` and the whole body at eight times that (`413`). The filename in each part may carry a relative path (`guides/setup.md`); folders become empty parent pages, and an `index.md` in a folder becomes that folder page's content. Absolute paths and `..` segments are `400`. All pages are created published at version 1 in a single transaction. Raw HTML in Markdown is dropped.
+Import behaviour: only `.md` and `.markdown` files are accepted, and any other file rejects the whole request with `400`. The filename in each part may carry a relative path (`guides/setup.md`); folders become empty parent pages, and an `index.md` in a folder becomes that folder page's content. Absolute paths and `..` segments are `400`. All pages are created published at version 1 in a single transaction, and an import that would make any page deeper than 64 levels is refused before anything is created (`400 page tree is too deep`). Raw HTML in Markdown is dropped.
+
+#### Import limits
+
+Each limit is checked before conversion and answers `400` unless noted.
+
+| Limit | Value |
+|---|---|
+| Files per request | 100 |
+| Pages created per request (files, minus `index.md` files folded into folders, plus folder pages) | 500 |
+| Directory depth in a filename | 10 segments |
+| One directory segment | 120 characters |
+| One filename | 255 characters |
+| Whole path | 4096 bytes |
+| One file | 2 MiB, or `ATTACHMENT_MAX_BYTES` if that is smaller (`413`) |
+| Request body | 32 MiB plus 1 MiB of multipart framing (`413`) |
+| Lines per file | 20000 (`400 file too complex: <name>`) |
+| Nested blockquote or list markers on one line | 32 (`400 file too complex: <name>`) |
+| Conversion time per file | 5 seconds (`400 file too complex: <name>`) |
+| Concurrent conversions | 4 per API process; when all slots are busy the request answers `503 import is busy, try again` |
+| Page tree depth | 64 levels (`400 page tree is too deep`) |
+
+A file that goldmark cannot convert answers `400 unsupported markdown structure: <name>`.
 
 ## Health
 
@@ -283,6 +306,32 @@ Import rules: only `.md` and `.markdown` files are accepted, and any other file 
 | GET | `/health` | public | Outside `/api/v1`. Returns `{"ok": true, "version": "<VERSION build arg>"}`. Used by the container healthcheck and the Kubernetes liveness probe. |
 
 ---
+
+## Limits and timeouts
+
+| Limit | Value |
+|---|---|
+| JSON request body | 1 MiB |
+| Request headers | 64 KiB |
+| Reading request headers | 10 seconds |
+| Reading a whole request | 60 seconds |
+| Reading `POST .../attachments` and `POST .../import` | 5 minutes, which is also the deadline on the request's context, so a slower upload is cut off |
+| Writing a response | no limit, so downloads and the SSE stream are not cut |
+| Idle keep-alive connection | 120 seconds |
+| Database statement | 30 seconds (`statement_timeout` on every pooled connection); a longer query is cancelled and answers `500` |
+| Page tree depth | 64 levels, enforced on create, copy, move, restore, and import (`400 page tree too deep`) |
+| Reply depth | two levels below a top-level comment |
+
+### Rate limits
+
+Credential endpoints use two token buckets, both kept in memory per API process:
+
+- **Per client IP** on `POST /auth/login` and `POST /auth/change-password`: burst 10, refilling 10 per minute.
+- **Per email** (lower-cased; the caller's own email for change-password): burst 5, refilling 5 per minute. It is checked before any password hashing. Every attempt uses a token, whether or not the password was right, so five attempts in a short window lock that email out until tokens refill (one every 12 seconds), **including the legitimate owner**. That is the accepted trade-off against password guessing; it also means a correct password can answer `429` while the bucket is empty.
+
+Both answer `429 too many requests` with `Retry-After: 60`. Each bucket table holds at most 10,000 keys (least recently used are evicted), and no more than four password hashes run at once, so parallel logins queue.
+
+The client IP is the TCP peer address unless `TRUSTED_PROXIES` is set. When the peer is inside that list, the IP is the right-most `X-Forwarded-For` entry that is not itself trusted (falling back to `X-Real-IP` when there is no `X-Forwarded-For`). With `TRUSTED_PROXIES` empty these headers are ignored, so behind a proxy every client shares the proxy's bucket. See [CONFIGURATION.md](CONFIGURATION.md#cookies-and-transport-security).
 
 ## Cursor pagination
 

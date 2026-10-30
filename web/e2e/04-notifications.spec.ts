@@ -3,7 +3,7 @@ import { ADMIN_STATE } from "./support/env";
 import { adminApi, createPublishedPage, ensureSpace, unreadCount, type ApiPage } from "./support/api";
 import { editorSurface, publishFromEditor, waitForSaved } from "./support/editor";
 import { run, spaceKey, uniq } from "./support/run";
-import { uiLogin } from "./support/ui";
+import { userContext } from "./support/ui";
 
 const second = () => ({
   name: `Grace Hopper ${run().runId}`,
@@ -71,9 +71,8 @@ test.describe.serial("watching and notifications", () => {
     await page.goto(pageUrl());
     await expect(page.getByRole("button", { name: /^Notifications/ })).toBeVisible();
 
-    const userContext = await browser.newContext();
-    const userPage = await userContext.newPage();
-    await uiLogin(userPage, u.email, u.password);
+    const userCtx = await userContext(browser, u.email, u.password);
+    const userPage = await userCtx.newPage();
     await userPage.goto(`/spaces/${spaceKey()}/pages/${watched.id}/edit`);
     const surface = editorSurface(userPage);
     await expect(surface).toContainText("Initial release plan.");
@@ -83,7 +82,7 @@ test.describe.serial("watching and notifications", () => {
     await waitForSaved(userPage);
     await publishFromEditor(userPage, "Second user update");
     await expect(userPage.locator(".kn-content").first()).toContainText("Updated by the second user.");
-    await userContext.close();
+    await userCtx.close();
 
     const bell = page.getByRole("button", { name: new RegExp(`^Notifications, ${before + 1} unread`) });
     await expect(bell).toBeVisible({ timeout: 20_000 });
@@ -111,9 +110,8 @@ test.describe.serial("watching and notifications", () => {
 
   test("the second user sees the published change and the history entry", async ({ browser }) => {
     const u = second();
-    const ctx = await browser.newContext();
+    const ctx = await userContext(browser, u.email, u.password);
     const p = await ctx.newPage();
-    await uiLogin(p, u.email, u.password);
     await p.goto(pageUrl());
     await expect(p.locator(".kn-content").first()).toContainText("Updated by the second user.");
     await expect(p.getByRole("link", { name: "Version 2" })).toBeVisible();
@@ -122,9 +120,8 @@ test.describe.serial("watching and notifications", () => {
 
   test("mentioning a user in a published change notifies them", async ({ browser, page }) => {
     const u = second();
-    const ctx = await browser.newContext();
+    const ctx = await userContext(browser, u.email, u.password);
     const p = await ctx.newPage();
-    await uiLogin(p, u.email, u.password);
     await p.goto(`/spaces/${spaceKey()}/pages/${watched.id}/edit`);
     const surface = editorSurface(p);
     await expect(surface).toContainText("Updated by the second user.");

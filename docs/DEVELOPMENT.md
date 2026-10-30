@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Go 1.25+
+- Go 1.26+ (`api/go.mod` says `go 1.26.0`, and the Docker builder is `golang:1.26-alpine`). Use **Go 1.26.10 or newer** locally: older 1.26 releases carry standard-library vulnerabilities that `govulncheck` reports (32 findings on 1.26.0, none on 1.26.10), and the published images are built with the current 1.26 patch release.
 - Node 22+
 - Docker with the Compose plugin (for Postgres and object storage, and for the API integration tests)
 - `goose` CLI (optional; the API runs migrations on start). Install with `go install github.com/pressly/goose/v3/cmd/goose@v3.27.0`.
@@ -143,9 +143,9 @@ Migrations are goose SQL files in `api/migrations/` named `NNNN_name.sql`, each 
 | templates | 0060-0069 | 0060 |
 | notify | 0070-0079 | 0070 |
 | export | 0080-0089 | none |
-| integration fixes | 0090+ | none |
+| integration fixes | 0090+ | 0090 |
 
-Pick the next free number in the range for your area, for example `api/migrations/0021_page_example.sql`:
+`0090_perf_indexes.sql` (integration fixes) adds `idx_page_views_page`, `idx_pages_recent` (published pages by `updated_at, id`), `idx_pages_draft_owner` (draft pages by creator), and `idx_notifications_user_created` (notifications by user and `created_at, id`); its Down section drops them in reverse. Pick the next free number in the range for your area, for example `api/migrations/0021_page_example.sql`:
 
 ```sql
 -- +goose Up
@@ -273,7 +273,16 @@ export KNOWLEDGE_TEST_POSTGRES_DSN="postgres://knowledge:knowledge@localhost:543
 go test -count=1 ./...
 ```
 
-In `handlers_test`, `newEnv(t, mutate)` runs the whole router over `httptest` with a cookie-jar client, and `testutil` has fixtures for users, sessions, spaces, members, and pages. Tests that need the event bus or a fake `storage.ObjectStore` build their own router; see `pages_test.go` and `attachments_test.go`.
+Check dependencies for known vulnerabilities with the same toolchain the images use:
+
+```bash
+go install golang.org/x/vuln/cmd/govulncheck@latest
+cd api && GOTOOLCHAIN=go1.26.10 govulncheck ./...
+```
+
+On go1.26.10 it reports no affected code. It also lists vulnerabilities in required modules that the code does not call; those are informational.
+
+In `handlers_test`, `newEnv(t, mutate)` runs the whole router over `httptest` with a cookie-jar client, and `testutil` has fixtures for users, sessions, spaces, members, and pages. Tests that need the event bus or a fake `storage.ObjectStore` build their own router; see `pages_test.go` and `attachments_test.go`. The test helpers set `Config.TrustedProxies` to loopback so each client can send its own `X-Forwarded-For`, which keeps the per-IP login limiter from being shared across tests; a test that builds its own router and relies on that header must set `TrustedProxies` the same way. Rate limiters are per router (`Deps.AuthLimits`), not process-global.
 
 ### Web
 
@@ -330,6 +339,11 @@ Reset one user's password without touching the rest: sign in as another system a
 - **Login succeeds but the session is lost over HTTPS:** set `COOKIE_SECURE=true`. Over plain HTTP leave it `false`, or the browser drops the `Secure` cookie.
 - **Notifications only appear after a reload (SSE not updating):** confirm `/api/v1/notifications/stream` is a long-lived request in the network panel. A proxy that buffers or compresses the response holds the events back; the API sends `X-Accel-Buffering: no` and `Cache-Control: no-cache`, but a reverse proxy in front must also stream responses unbuffered. Cross-origin setups need the origin in `APP_ORIGINS`.
 - **404 for a space or page you know exists:** private spaces answer `404` to non-members, as do draft pages to anyone but their creator and space admins, and trashed pages to viewers. Check membership and role in **Settings** then **Members**, or look as a system admin. Keys are case-insensitive but must be the key, not the name.
+- **Everyone gets `429 too many requests` on login behind a proxy:** with `TRUSTED_PROXIES` empty the API keys rate limits on the TCP peer, which behind an ingress is the proxy for all users. Set `TRUSTED_PROXIES` to the proxy's address range (see [CONFIGURATION.md](CONFIGURATION.md#rate-limiting-and-proxies)). One user locked out after a few wrong passwords is the per-email limit, which refills one token every 12 seconds.
+- **SSO shows a "Sign-in blocked" page (403):** the IdP did not say the email is verified, and the email belongs to an existing local account. Verify the address at the IdP, sign in with the password, or (only if the IdP guarantees addresses) set `OIDC_REQUIRE_EMAIL_VERIFIED=false`.
+- **Markdown import answers 400 or 503:** one of the [import limits](API.md#import-limits) was hit (100 files, 500 pages, 2 MiB per file, 10 folder levels, 20000 lines, 5 second conversion), or all four conversion slots were busy. Nothing is created when an import fails.
+- **Page tree errors (`page tree too deep`):** the tree is capped at 64 levels.
+- **A long upload dies after five minutes, or a request after sixty seconds:** these are the server's read deadlines. Attachment and import `POST`s get five minutes; every other request must finish arriving within sixty seconds.
 - **Uploads rejected with 413:** the file exceeds `ATTACHMENT_MAX_BYTES` (default 25 MiB), or a reverse proxy in front has a smaller body limit and answers 413 itself.
 - **Uploads or downloads rejected with 503:** `STORAGE_S3_BUCKET` is unset, so object storage is disabled. Attachment listing still works.
 - **Uploads fail with a storage error:** check `STORAGE_S3_ENDPOINT` is reachable from the API (not from the browser), `STORAGE_S3_FORCE_PATH_STYLE=true`, region `us-east-1`, that the bucket exists, and that `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` match the store's credentials.

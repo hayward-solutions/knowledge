@@ -4,7 +4,7 @@ Knowledge is a self-hosted, Confluence-style documentation and knowledge-sharing
 
 ## Stack
 
-- API: Go 1.25, chi v5, pgx v5 (no ORM), goose migrations, argon2id sessions, go-oidc, aws-sdk-go-v2 S3, bluemonday, goldmark. Module `github.com/hayward-solutions/knowledge/api`.
+- API: Go 1.26, chi v5, pgx v5 (no ORM), goose migrations, argon2id sessions, go-oidc, aws-sdk-go-v2 S3, bluemonday, goldmark. Module `github.com/hayward-solutions/knowledge/api`.
 - Web: Next.js 15 app router, React 18, TypeScript, Tailwind 3, React Query 5, TipTap 2.
 - Data: Postgres 16, S3-compatible object storage (RustFS in compose and in the k3s cluster).
 - Images: distroless api (uid 65532, read-only root filesystem), Next standalone web (uid 1000). Published to GHCR as multi-arch (amd64, arm64).

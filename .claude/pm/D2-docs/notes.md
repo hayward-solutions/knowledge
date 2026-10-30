@@ -46,3 +46,21 @@
 ## Process note
 
 I ran `git status` once by mistake while in `api/` (read-only, no output kept) before remembering the no-git rule. No other git command was run and nothing was staged or changed.
+
+## Refresh after the review remediation
+
+Edited: `docs/API.md`, `docs/CONFIGURATION.md`, `docs/DEVELOPMENT.md`, `docs/DEPLOYMENT.md`, and `CLAUDE.md` (the stack line now says Go 1.26; it was the only line in the file that said 1.25). `README.md` needed no change. Every item below was checked in code (`config.go`, `router.go`, `middleware/{realip,ratelimit,longrequest}.go`, `handlers/{auth,oidc,export,comments,pages}.go`, `store/{store,activity,users,pages,export}.go`, `cmd/server/main.go`, `migrations/0090`), not copied from the notes.
+
+Documented:
+- `TRUSTED_PROXIES` (default empty; effect; right-most-untrusted `X-Forwarded-For` rule; invalid entry fails startup) and `OIDC_REQUIRE_EMAIL_VERIFIED` (default true; 403 "Sign-in blocked" page, only when linking to an existing local account; new accounts and already-linked identities unaffected). `docker-compose.yml` does not forward either, which the docs say. DEPLOYMENT.md puts `TRUSTED_PROXIES` in the env table, the proxy section (how to find the range, the spoofing caveat, how to check it took effect), and checklist item 8.
+- Go 1.26 prerequisite and builder; govulncheck: 32 findings on local go1.26.0 (all standard library), none with `GOTOOLCHAIN=go1.26.10`, so the docs say to use 1.26.10+ locally. The lost-admin hash generator now pins `golang.org/x/crypto@v0.58.0` (re-run and it produces a valid hash).
+- Per-email login limiter (burst 5, one token per 12 s, every attempt costs a token, checked before hashing) and the lock-out trade-off; per-IP bucket; 4-slot argon2 semaphore; password change deletes the user's other sessions.
+- Server timeouts (10 s header, 60 s read, 120 s idle, 64 KiB headers, no write timeout), the 5-minute deadline for `POST .../attachments` and `.../import`, `statement_timeout` 30 s. `WithTxTimeout` exists but nothing calls it yet, so the docs only claim the 30 s default.
+- Import hard limits table (100 files, 500 pages, 10 dir levels, 120/255/4096, 2 MiB or `ATTACHMENT_MAX_BYTES`, 32 MiB body, 20000 lines, 32 nesting, 5 s, 4 slots with 503, depth 64) and the exact error strings.
+- Tree depth cap 64 (create, copy, move, restore, import), home page can be neither trashed nor moved (even through an ancestor), private spaces answer 404, trashed-page visibility on page/version/comment/label/attachment/activity routes, `inline_anchor` `prefix`/`suffix` (64 runes each), activity feed visibility rules, publish notifies only new mentions and not repeatedly while unread.
+- OIDC: admin-group mapping never demotes the last active admin (kept, warning logged), under advisory lock 7351001 shared with the admin console; `next` validation rules. The earlier statements that the API ignores `email_verified` and that the mapping has no last-admin guard were removed.
+- Migration 0090 (four indexes) in DEVELOPMENT.md; troubleshooting entries for 429 behind a proxy, Sign-in blocked, import 400/503, depth errors, upload deadlines.
+
+Re-run and passing: `go build ./... && go vet ./... && go test -count=1 ./...` (all packages ok); `npm run lint && npm run typecheck && npm run build`; the store, handlers, bootstrap and notify suites against `postgres:15` via `KNOWLEDGE_TEST_POSTGRES_DSN`; `docker build` of the api image on `golang:1.26-alpine`; a container run of that image with a read-only root: five wrong logins for one email then 429 on the sixth and seventh, and a spoofed `X-Forwarded-For` did not help (default `TRUSTED_PROXIES`); doc links and anchors resolve; no em dashes.
+
+Not verified: that the Tailscale ingress proxy sends `X-Forwarded-For` and which address range it connects from (DEPLOYMENT.md tells the operator how to check); the pi-lab cluster pod CIDR (k3s default 10.42.0.0/16 is stated as a default to confirm).
