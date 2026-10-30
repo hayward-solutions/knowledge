@@ -215,3 +215,13 @@ GATE_OK
 $ docker build -t knowledge-api:dev .      -> success
 ```
 Integration tests ran against a real `postgres:16-alpine` testcontainer (no skips). `go test -race` on events, http, storage also passes. `gofmt -l .` is clean and `go mod tidy` is a no-op.
+
+## Remediation: no space existence leak (coordinator request)
+
+`resolveSpace` in `internal/http/middleware/space.go` now answers 404 `{"error":"not found"}` when the space exists but the caller has no access (private space, non-member, not a system admin). A missing key, page or resolver target was already 404, so the two cases are now indistinguishable. This replaces deviation 4's neighbour behaviour: previously this case was 403 `forbidden`.
+
+Unchanged: 403 `forbidden` when the caller has access but lacks the permission (e.g. a viewer editing, a non-member of an internal space editing); 403 `space is read-only` for non-admin writes to archived spaces; soft-deleted spaces stay 404 for non-system-admins; system admins always resolve as `admin`.
+
+Tests updated (expected status only, for private non-member access): `middleware/middleware_test.go` (4 cases renamed from "forbidden" to "not found"/"hidden"), `handlers/attachments_test.go` (outsider upload/GET/DELETE on a private page), `comments_test.go` (outsider post/list/patch/delete/resolve; test renamed `TestCommentNonMemberOnPrivateSpaceHidden`), `labels_test.go` (non-member GET/PUT private page labels, private space labels and label pages), `pages_test.go` (outsider create, get, star; the create loop is now a map of expected codes: viewer 403, outsider 404), `spaces_test.go` (outsider GET on private space, already 404 by the time I edited), `versions_test.go` (outsider list versions). Assertions about viewers, editors and internal-space users were left at 403. `search_test.go` had no such assertion.
+
+Gate after the change: `gofmt -l .` clean, `go build ./... && go vet ./... && go test -count=1 ./...` all packages ok (including other agents' packages as of the final run).
